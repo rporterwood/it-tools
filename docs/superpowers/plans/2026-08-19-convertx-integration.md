@@ -1336,6 +1336,17 @@ Expected: FAIL — cannot resolve `./useConvertX`.
 
 - [ ] **Step 3: Write the composable**
 
+> **Operation invalidation is mandatory, and the code below does not show it.** Every
+> user-initiated operation — `init`, `selectFile`, `convert`, `reset`, and unmount — must bump a
+> shared generation counter on entry, and **every continuation after an `await` must re-check it**
+> before writing state or scheduling a timer. Guarding only `convert`/`poll`/`reset`/unmount is
+> not enough: a stale `selectFile` resolving late will stomp an active `'converting'` state back
+> to `'ready'`, and an in-flight poll will overwrite the `'ready'` state a fresh `selectFile` just
+> set — both reproduced against real code, both reachable by the ordinary interaction of picking a
+> file, starting a conversion, then picking a different file. Any "is this slow?" indicator must
+> be gated by the same counter, or an abandoned request's timer will flip it on over an idle
+> screen.
+
 `src/tools/file-converter/useConvertX.ts`:
 
 ```ts
