@@ -366,8 +366,10 @@ continues polling if the user agrees. It must not hard-fail a job that may simpl
   `window.open`. Subresource fetches bypass the service worker's `NavigationRoute` entirely
   (fact 24). `navigateFallbackDenylist: [/^\/api\//]` in `vite.config.ts` is the second layer.
   Already-installed service workers keep the old behavior until the new one activates.
-- **Drag/drop uses naive-ui's `n-upload` with `:custom-request`** — already a dependency, already
-  themed.
+- **Drag/drop uses the repo's own `c-file-upload`** (`src/ui/c-file-upload/c-file-upload.vue`),
+  which already implements drop-zone handling and emits `fileUpload`/`filesUpload`. It is the
+  established it-tools pattern (see `base64-file-converter.vue`); do not hand-roll a dropzone or
+  reach for naive-ui's `n-upload`.
 - **`convertx.service.ts` establishes it-tools' first HTTP layer**: typed responses,
   `AbortController` timeouts, the `{ success, message }` envelope, and the 401-retry policy above.
 - **The capability browser is a secondary panel inside this tool**, not a second tool card, and is
