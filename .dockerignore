@@ -3,3 +3,10 @@ playwright-report
 coverage
 dist
 test-results
+.env
+.env.*
+data
+services
+.git
+.superpowers
+docs

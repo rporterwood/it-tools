@@ -9,6 +9,13 @@ const currentFile = ref<File | null>(null);
 const selection = ref<string>('');
 const showCapabilities = ref(false);
 
+// Mirrors the extension check useConvertX.selectFile() uses to build the string it passes to
+// getTargets() (file.name.includes('.') ? ... : ''): a file with no extension at all always
+// gets targets: {} back, which is observationally identical to a recognized-but-unsupported
+// extension. Distinguishing the two here lets the "no converter for this type" warning stay
+// accurate instead of misleadingly blaming an extensionless file's "type".
+const hasNoExtension = computed(() => currentFile.value !== null && !currentFile.value.name.includes('.'));
+
 const targetOptions = computed(() =>
   Object.entries(targets.value).flatMap(([converter, list]) =>
     list.map(target => ({ label: `${target} (${converter})`, value: `${target},${converter}` })),
@@ -147,9 +154,16 @@ function startOver() {
           network/session failure, already surfaced by the errorMessage alert below.
           Showing this warning in that case would falsely blame the file's format.
         -->
+        <n-alert v-else-if="state === 'ready' && hasNoExtension" type="warning" mt-2 data-test-id="converter-no-extension">
+          "{{ currentFile.name }}" has no file extension, so format detection can't identify it —
+          detection is extension-based, not content-based. Rename the file to add its real
+          extension (for example, a <code>Makefile</code> saved as <code>Makefile.txt</code>) and
+          try again.
+        </n-alert>
+
         <n-alert v-else-if="state === 'ready'" type="warning" mt-2>
           No converter handles this file type. Check the supported formats below — detection is
-          based on the file extension, so an unusual or missing extension is a common cause.
+          based on the file extension, so an unusual extension is a common cause.
         </n-alert>
       </div>
 

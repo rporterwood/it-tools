@@ -375,7 +375,7 @@ continues polling if the user agrees. It must not hard-fail a job that may simpl
 |---|---|
 | Backend unreachable | Designed empty state naming the configured URL |
 | Backend up, `ALLOW_UNAUTHENTICATED=false` | `/session` 401s → "this backend requires a ConvertX account; not supported in the MVP" — distinguishable from unreachable only because the health probe succeeded |
-| No/unknown extension | Manual format picker — `getPossibleTargets("")` returns `{}` silently (fact 15) |
+| No/unknown extension | `getTargets('')` returns `{}` silently (fact 15); the UI shows a dedicated hint telling the user detection is extension-based and to rename the file with its real extension, distinct from the generic "no converter for this type" message a recognized-but-unsupported extension gets. No manual format picker in the MVP — see §9. |
 | Zero targets for type | Explain, and link to the capability panel |
 | Conversion failed | Surface the status string verbatim, plus "details are in the ConvertX container log" (fact 12) |
 | Stalled | Soft timeout with a keep-waiting affordance |
@@ -515,6 +515,10 @@ Coverage target is 80% per project standards, measured on the it-tools side.
   friction
 - Rate limiting (see §2)
 - Editing the nine `locales/*.yml` files
+- Manual format picker for no/unknown-extension files (§6) — file-type detection is
+  extension-only (fact 15), and a picker UI is disproportionate scope for the MVP. Deferred;
+  the client instead tells the user detection is extension-based and to rename the file with
+  its real extension.
 
 ---
 

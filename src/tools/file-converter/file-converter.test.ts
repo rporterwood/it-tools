@@ -135,6 +135,22 @@ describe('file-converter states', () => {
     expect(wrapper.text()).toContain('No converter handles this file type');
   });
 
+  it('ready + empty targets, file has no extension at all: shows the rename hint, not the generic warning', async () => {
+    // Spec §6 deferral (I4): a picker was never built for this case, so an extensionless file
+    // (Makefile, Dockerfile, ...) still lands on the generic "no converter handles this file
+    // type" dead end unless the component special-cases it. useConvertX.selectFile() derives
+    // the extension the same way this test picks a file to reproduce that path: file.name has
+    // no '.' at all, so getTargets('') is called and (per this mock) resolves to {}.
+    const { wrapper } = await mountInState({ state: 'ready', targets: {} });
+
+    const file = new File(['x'], 'Makefile', { type: 'application/octet-stream' });
+    await pickFile(wrapper, file);
+
+    expect(wrapper.find('[data-test-id="converter-no-extension"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain('has no file extension');
+    expect(wrapper.text()).not.toContain('No converter handles this file type');
+  });
+
   it('ready + populated targets after a file is picked: shows the target select, not the warning', async () => {
     const { wrapper } = await mountInState({ state: 'ready', targets: { ffmpeg: ['mp4', 'webm'] } });
 
