@@ -1857,6 +1857,10 @@ In `playwright.config.ts`, inside `use: { … }`, add:
 `src/tools/file-converter/file-converter.e2e.spec.ts`:
 
 ```ts
+// `node:buffer` import is required, not optional: this repo's eslint enforces
+// `n/prefer-global/buffer`, and `pnpm lint` is a hard CI gate. A bare `Buffer`
+// global typechecks and passes tests, then fails the build on CI.
+import { Buffer } from 'node:buffer';
 import { expect, test } from '@playwright/test';
 
 test.describe('Tool - File converter', () => {

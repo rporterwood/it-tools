@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { expect, test } from '@playwright/test';
 
 test.describe('Tool - File converter', () => {
@@ -67,6 +68,15 @@ test.describe('Tool - File converter', () => {
     // converter handles' button ('converter' contains 'convert').
     await page.getByRole('button', { name: 'Convert', exact: true }).click();
 
-    await expect(page.getByTestId('converter-result')).toContainText('Failed, check logs');
+    // 'Failed, check logs' alone is not sufficient: file.status is rendered verbatim in BOTH
+    // branches of the v-if="result.failed" split (see file-converter.vue), so this same literal
+    // string would also appear next to a live Download button if `failed` were ever miscomputed
+    // (e.g. derived from job.status instead of the per-file status). Pin the actual semantic by
+    // also asserting on the alert text that only the failed branch renders, and that no Download
+    // button exists for this result.
+    const result = page.getByTestId('converter-result');
+    await expect(result).toContainText('Failed, check logs');
+    await expect(result).toContainText('Details are in the ConvertX container log.');
+    await expect(result.getByRole('button', { name: /Download/ })).toHaveCount(0);
   });
 });
