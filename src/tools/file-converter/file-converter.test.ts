@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import type { VueWrapper } from '@vue/test-utils';
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import FileConverter from './file-converter.vue';
 import type { ConvertResult, ConvertState } from './useConvertX';
 import { useConvertX } from './useConvertX';
+import { downloadFile } from './convertx.service';
 import CFileUpload from '@/ui/c-file-upload/c-file-upload.vue';
 
 // The composable is fully mocked here: its own behavior is already covered by
@@ -63,6 +64,15 @@ async function mountInState(overrides: MockOverrides = {}) {
 // component actually communicates the file.
 async function pickFile(wrapper: VueWrapper<any>, file: File) {
   await wrapper.findComponent(CFileUpload).vm.$emit('fileUpload', file);
+  await wrapper.vm.$nextTick();
+}
+
+// Drives c-select's real DOM structure (see the it-tools specifics this task was briefed
+// on: root is c-label, trigger is `.c-select-input`, options live in `.c-select-dropdown`)
+// to pick the first available target option, so `selection` becomes non-empty.
+async function selectFirstTarget(wrapper: VueWrapper<any>) {
+  await wrapper.find('[data-test-id="converter-targets"] .c-select-input').trigger('click');
+  await wrapper.find('.c-select-dropdown-option').trigger('click');
   await wrapper.vm.$nextTick();
 }
 
@@ -162,9 +172,18 @@ describe('file-converter states', () => {
     expect(wrapper.text()).toContain('Still trying');
   });
 
-  it('stalled: shows the stall notice and a keep-waiting control', async () => {
-    const { wrapper, mocked } = await mountInState({ state: 'stalled' });
+  it('stalled: shows the stall notice, a keep-waiting control, and keeps the target picker visible', async () => {
+    // Mounted via a ready -> stalled transition (rather than mounted directly into 'stalled')
+    // so a file/targets are actually present to exercise the picker-stays-visible ruling -
+    // matching how this state is reached in practice.
+    const { wrapper, mocked } = await mountInState({ state: 'ready', targets: { ffmpeg: ['mp4'] } });
+    await pickFile(wrapper, new File(['x'], 'video.mkv'));
+
+    mocked.state.value = 'stalled';
+    await wrapper.vm.$nextTick();
+
     expect(wrapper.text()).toContain('Still working after 10 minutes');
+    expect(wrapper.find('[data-test-id="converter-targets"]').exists()).toBe(true);
 
     const buttons = wrapper.findAll('button').filter(b => b.text().includes('Keep waiting'));
     expect(buttons.length).toBe(1);
@@ -172,7 +191,26 @@ describe('file-converter states', () => {
     expect(mocked.keepWaiting).toHaveBeenCalledOnce();
   });
 
-  it('done: renders successful and failed results distinctly, with the result test-id hook', async () => {
+  it('converting: the target picker stays visible but Convert is inert while disabled', async () => {
+    const { wrapper, mocked } = await mountInState({ state: 'ready', targets: { ffmpeg: ['mp4'] } });
+    await pickFile(wrapper, new File(['x'], 'video.mkv'));
+    await selectFirstTarget(wrapper);
+
+    mocked.state.value = 'converting';
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-test-id="converter-targets"]').exists()).toBe(true);
+
+    const convertButton = wrapper.findAll('button').find(b => b.text() === 'Convert');
+    expect(convertButton).toBeTruthy();
+    await convertButton!.trigger('click');
+
+    // The button's own `disabled` prop swallows the click before it ever reaches onConvert() -
+    // this is the functional proof the ruling actually works, not just a CSS class check.
+    expect(mocked.convert).not.toHaveBeenCalled();
+  });
+
+  it('done: renders successful and failed results distinctly, with the result test-id hook and the container-log pointer', async () => {
     const results: ConvertResult[] = [
       { name: 'output.mp4', failed: false, status: 'Done' },
       { name: 'bad.mp4', failed: true, status: 'Failed, check logs' },
@@ -183,10 +221,56 @@ describe('file-converter states', () => {
     expect(wrapper.text()).toContain('Download output.mp4');
     expect(wrapper.text()).toContain('bad.mp4');
     expect(wrapper.text()).toContain('Failed, check logs');
+    expect(wrapper.text()).toContain('Details are in the ConvertX container log.');
+  });
+
+  it('done: hides the target picker and Convert button now that results are showing', async () => {
+    const { wrapper, mocked } = await mountInState({ state: 'ready', targets: { ffmpeg: ['mp4'] } });
+    await pickFile(wrapper, new File(['x'], 'video.mkv'));
+    expect(wrapper.find('[data-test-id="converter-targets"]').exists()).toBe(true);
+
+    mocked.state.value = 'done';
+    mocked.results.value = [{ name: 'output.mp4', failed: false, status: 'Done' }];
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-test-id="converter-targets"]').exists()).toBe(false);
+    expect(wrapper.findAll('button').some(b => b.text() === 'Convert')).toBe(false);
+    expect(wrapper.find('[data-test-id="converter-result"]').exists()).toBe(true);
   });
 
   it('error: renders the error message', async () => {
     const wrapper = await expectNonBlankRender({ state: 'error', errorMessage: 'The conversion failed.' });
     expect(wrapper.text()).toContain('The conversion failed.');
+  });
+
+  it('onDownload: a non-expired failure surfaces the service layer\'s own message verbatim', async () => {
+    vi.mocked(downloadFile).mockRejectedValueOnce(new Error('Could not reach the converter backend.'));
+
+    const results: ConvertResult[] = [{ name: 'output.mp4', failed: false, status: 'Done' }];
+    const { wrapper } = await mountInState({ state: 'done', results, jobId: 42 });
+
+    const downloadButton = wrapper.findAll('button').find(b => b.text().includes('Download output.mp4'));
+    expect(downloadButton).toBeTruthy();
+
+    await downloadButton!.trigger('click');
+    await flushPromises();
+
+    // The service layer already translated this into a specific, human-readable message -
+    // it must reach the user unchanged, not get collapsed into a generic 'Download failed.'
+    expect(wrapper.text()).toContain('Could not reach the converter backend.');
+    expect(wrapper.text()).not.toContain('Download failed.');
+  });
+
+  it('onDownload: the "expired" sentinel is translated into an explanatory message', async () => {
+    vi.mocked(downloadFile).mockRejectedValueOnce(new Error('expired'));
+
+    const results: ConvertResult[] = [{ name: 'output.mp4', failed: false, status: 'Done' }];
+    const { wrapper } = await mountInState({ state: 'done', results, jobId: 42 });
+
+    const downloadButton = wrapper.findAll('button').find(b => b.text().includes('Download output.mp4'));
+    await downloadButton!.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('This file has expired. Converted files are kept for about 24 hours.');
   });
 });

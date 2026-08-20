@@ -43,13 +43,23 @@ async function onDownload(name: string) {
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = name;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    document.body.appendChild(anchor);
+    try {
+      anchor.click();
+    }
+    finally {
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    }
   }
   catch (error) {
-    errorMessage.value = error instanceof Error && error.message === 'expired'
+    // 'expired' is a bare sentinel from the service layer, not a message - everything else
+    // (network failure, timeout, unreadable response) is already a human-readable string that
+    // should be shown verbatim, exactly like every other error path in this component.
+    const message = error instanceof Error ? error.message : 'Unexpected error';
+    errorMessage.value = message === 'expired'
       ? 'This file has expired. Converted files are kept for about 24 hours.'
-      : 'Download failed.';
+      : message;
   }
 }
 
@@ -107,18 +117,27 @@ function startOver() {
           </span>
         </div>
 
-        <template v-else-if="targetOptions.length > 0">
-          <c-select
-            v-model:value="selection"
-            :options="targetOptions"
-            label="Convert to"
-            placeholder="Choose an output format"
-            data-test-id="converter-targets"
-            my-2
-          />
-          <c-button :disabled="!selection || state === 'converting'" @click="onConvert()">
-            Convert
-          </c-button>
+        <!--
+          Hidden once `state === 'done'`: a live Convert control sitting under a finished
+          conversion's results invites a second click that does nothing useful. Visible-but-
+          disabled during `converting`/`stalled` so the user can still see what they chose while
+          it runs; still visible and enabled for `error`, since that is the recoverable case
+          where re-picking a target and retrying is the point.
+        -->
+        <template v-else-if="targetOptions.length > 0 && state !== 'done'">
+          <div :class="{ 'pointer-events-none op-50': state === 'converting' || state === 'stalled' }">
+            <c-select
+              v-model:value="selection"
+              :options="targetOptions"
+              label="Convert to"
+              placeholder="Choose an output format"
+              data-test-id="converter-targets"
+              my-2
+            />
+            <c-button :disabled="!selection || state === 'converting' || state === 'stalled'" @click="onConvert()">
+              Convert
+            </c-button>
+          </div>
         </template>
 
         <!--

@@ -1657,9 +1657,18 @@ async function onDownload(name: string) {
     URL.revokeObjectURL(url);
   }
   catch (error) {
-    errorMessage.value = (error as Error).message === 'expired'
+    // Only the 'expired' sentinel gets rewritten — it is a bare marker, not a message.
+    // Everything else already carries a translated, human-readable string from the
+    // service layer ('Could not reach the converter backend.', 'The converter backend
+    // did not respond in time.', …). Collapsing those to a generic 'Download failed.'
+    // throws away exactly the information that layer exists to produce, and is
+    // inconsistent with every other error surface in this component, which renders
+    // `errorMessage` verbatim.
+    const message = error instanceof Error ? error.message : 'Unexpected error';
+
+    errorMessage.value = message === 'expired'
       ? 'This file has expired. Converted files are kept for about 24 hours.'
-      : 'Download failed.';
+      : message;
   }
 }
 
