@@ -167,6 +167,7 @@ The alias exists because nginx proxies only `/api/v1/`; a probe to the unproxied
 `services/convertx/src/pages/apiSession.tsx`:
 
 ```tsx
+import { randomInt } from "node:crypto";
 import { Elysia } from "elysia";
 import { ALLOW_UNAUTHENTICATED, HTTP_ALLOWED, UNAUTHENTICATED_USER_SHARING } from "../helpers/env";
 import { userService } from "./user";
@@ -190,7 +191,15 @@ export const apiSession = new Elysia({ prefix: "/api/v1" }).use(userService).pos
       return { success: false, message: "Unauthorized" };
     }
 
-    const userId = UNAUTHENTICATED_USER_SHARING ? 0 : Math.floor(Math.random() * 2 ** 24);
+    // Mirrors root.tsx:38 exactly. Two things matter and both are load-bearing:
+    // (1) randomInt is a CSPRNG — this id IS the authorization identity scoping every job,
+    //     so Math.random() would make it guessable;
+    // (2) the range starts at 2**24 because ids BELOW that are upstream's real-account space
+    //     (see the guard at root.tsx:65). Generating into [0, 2**24) inverts the convention
+    //     and shrinks the space enough for birthday collisions at a few thousand users.
+    const userId = UNAUTHENTICATED_USER_SHARING
+      ? 0
+      : randomInt(2 ** 24, Math.min(2 ** 48 + 2 ** 24 - 1, Number.MAX_SAFE_INTEGER));
     const token = await jwt.sign({ id: String(userId) });
 
     auth.set({
@@ -540,7 +549,9 @@ import { Jobs } from "../db/types";
   )
 ```
 
-**Critical:** use `result.lastInsertRowid`. Do **not** copy `root.tsx`'s `INSERT` + `SELECT … ORDER BY id DESC` — under the single shared user id of D6 that is a live race, which the third test above exists to catch.
+**Critical:** use `result.lastInsertRowid`. Do **not** copy `root.tsx`'s `INSERT` + `SELECT … ORDER BY id DESC` — under the single shared user id of D6 that is a live race.
+
+**Do not claim the concurrency test guards this — it does not.** Verified: patching the racy pattern in and running the suite five times passes 6/6 every time. `Promise.all` around two `app.handle()` calls only interleaves at genuine `await` points, and both SQLite calls are synchronous, so JS run-to-completion semantics prevent the `INSERT`/`SELECT` pairs from ever interleaving inside one Bun process. Genuine coverage would need a multi-process or multi-connection load test, which is not worth the complexity here. Use a **source-level tripwire** instead (same shape as Task 5's failure-set test): assert `api.tsx` contains `lastInsertRowid` and does not contain `ORDER BY id DESC`. That is honest about being a lint-style guard rather than a behavioural one.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -727,7 +738,19 @@ import { Filename } from "../db/types";
         return { success: false, message: "Job not found" };
       }
 
-      if (job.num_files > 0) {
+      // Single-use claim, done ATOMICALLY. Do NOT read num_files here and write it
+      // later: the `await mkdir(...)` below is a real yield point, so a plain
+      // check-then-write lets two concurrent converts both pass the check, both fire
+      // handleConvert, and both append to file_names — corrupting the very
+      // files.length === numFiles invariant this guard exists to protect.
+      // `.changes === 0` means someone else claimed it first (or it already ran).
+      const claimed = db
+        .query(
+          "UPDATE jobs SET num_files = ?1, status = 'pending' WHERE id = ?2 AND num_files = 0",
+        )
+        .run(body.fileNames.length, params.id);
+
+      if (claimed.changes === 0) {
         set.status = 409;
         return { success: false, message: "Job already used" };
       }
@@ -746,7 +769,23 @@ import { Filename } from "../db/types";
       const fileNames = body.fileNames.map((n) => sanitize(n));
       const userUploadsDir = `${uploadsDir}${user.id}/${params.id}/`;
       const userOutputDir = `${outputDir}${user.id}/${params.id}/`;
-      await mkdir(userOutputDir, { recursive: true });
+
+      // Everything from here until handleConvert is fired runs with the job ALREADY
+      // claimed, so any throw in between strands it: num_files is set, no .then()/
+      // .catch() will ever run, and the 409 guard blocks reuse. mkdir genuinely can
+      // throw (disk full, permissions, ENOTDIR) — verified by placing a plain file
+      // where the output directory belongs. Catch it and write the same terminal
+      // state the conversion failure path uses, so a stranded job is discoverable
+      // rather than silently pending forever.
+      try {
+        await mkdir(userOutputDir, { recursive: true });
+      }
+      catch (error) {
+        console.error("Failed to create the output directory:", error);
+        db.query("UPDATE jobs SET status = 'failed' WHERE id = ?1").run(params.id);
+        set.status = 500;
+        return { success: false, message: "Could not start conversion" };
+      }
 
       db.query("UPDATE jobs SET num_files = ?1, status = 'pending' WHERE id = ?2").run(
         fileNames.length,
@@ -769,6 +808,14 @@ import { Filename } from "../db/types";
         })
         .catch((error) => {
           console.error("Error in conversion process:", error);
+          // Write a TERMINAL state. Without this the job sits at 'pending' forever:
+          // nothing server-side ever transitions it, and because jobs are single-use
+          // the client can neither discover the failure nor retry — it would poll
+          // until its stall timeout and report "still working" about a job that is
+          // already dead. Upstream convert.tsx has the same fire-and-forget shape but
+          // no single-use guard, so a stuck job there is merely resubmitted; our guard
+          // is what turns it into a permanent wedge, so our .catch() must close it.
+          db.query("UPDATE jobs SET status = 'failed' WHERE id = ?1").run(params.id);
         });
 
       return { accepted: true };
@@ -892,6 +939,19 @@ Expected: FAIL — the route does not exist, so Elysia's default 404 body does n
         set.status = 404;
         return { success: false, message: "File not found" };
       }
+
+      // Bun infers Content-Type from the file; it does NOT set a disposition, so a
+      // browser navigating here directly would render text/images/PDFs inline.
+      //
+      // The raw name CANNOT go in the basic `filename` parameter: HTTP header values
+      // are Latin-1, `sanitize-filename` does not strip non-ASCII, and a Cyrillic or
+      // CJK name therefore throws an uncaught TypeError inside Elysia's response
+      // mapping — surfacing as a 500 with Bun's raw HTML crash page (stack trace and
+      // absolute local paths), not the JSON envelope. Use RFC 5987/6266: an ASCII
+      // fallback plus the extended parameter, which is ASCII by construction.
+      const asciiFallback = name.replace(/[^\x20-\x7E]/g, '_');
+      set.headers['content-disposition']
+        = `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 
       return file;
     },
@@ -1032,6 +1092,31 @@ const BASE = config.app.convertxUrl;
 
 const FAILURE_STATUSES = ['Failed, check logs', 'File type not supported'];
 
+// Timeouts are per-call, not global — one value cannot serve all of these.
+// The health probe must fail FAST: it runs on mount and gates the tool's
+// "backend not reachable" state, so a long wait means a spinner where an
+// error belongs. JSON calls are small and quick; 30s is generous.
+// Uploads and downloads are bandwidth-bound and legitimately slow for large
+// media (nginx allows 2GB), so they get NO client timeout — bounding them
+// here would cancel healthy transfers. nginx and the browser already bound
+// those.
+const HEALTH_TIMEOUT_MS = 5_000;
+const JSON_TIMEOUT_MS = 30_000;
+
+function withTimeout(ms: number | null, init: RequestInit): { init: RequestInit, cancel: () => void } {
+  if (ms === null) {
+    return { init, cancel: () => {} };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+
+  return {
+    init: { ...init, signal: controller.signal },
+    cancel: () => clearTimeout(timer),
+  };
+}
+
 export interface JobStatus {
   status: string
   numFiles: number
@@ -1045,7 +1130,12 @@ export function isFailureStatus(status: string): boolean {
 async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
   const response = await fetch(`${BASE}${path}`, { ...init, credentials: 'same-origin' });
 
-  if (response.status === 401 && retry) {
+  // 401 = cookie present but invalid/expired. 422 = NO cookie at all: upstream's `auth`
+  // macro binds `cookie: "session"`, whose schema declares `auth` as a REQUIRED string, so
+  // a cookie-less request fails Elysia's schema validation before resolve() ever runs.
+  // Both mean "no usable session", and both must trigger a re-bootstrap — retrying only on
+  // 401 leaves a user who cleared their cookies stuck on a hard error.
+  if ((response.status === 401 || response.status === 422) && retry) {
     await createSession();
     return request<T>(path, init, false);
   }
@@ -1271,7 +1361,25 @@ export interface ConvertResult {
   status: string
 }
 
-export function classifyJob(job: JobStatus): { done: boolean, results?: ConvertResult[] } {
+export function classifyJob(job: JobStatus): { done: boolean, failed?: boolean, results?: ConvertResult[] } {
+  // Completeness is checked BEFORE the job-level failure flag, deliberately.
+  // handleConvert chunks its work, so a job can be marked 'failed' by one chunk's
+  // DB write throwing while sibling files still land their rows — checking 'failed'
+  // first would hide real, downloadable results from the user.
+  if (job.numFiles > 0 && job.files.length === job.numFiles) {
+    // fall through to the per-file classification below
+  }
+  else if (job.status === 'failed') {
+    // The ONE case where job.status is authoritative. The API writes 'failed' from
+    // handleConvert's .catch(), and from the output-directory failure path — the
+    // only signals that the background chain died before producing rows. Without
+    // this the client polls until its stall timeout, reporting "still working"
+    // about a job that is already dead and, being single-use, unretryable.
+    // Every OTHER status value stays untrustworthy: 'completed' is written
+    // unconditionally in .then() even when every single file failed.
+    return { done: true, failed: true, results: [] };
+  }
+
   if (job.files.length !== job.numFiles) {
     return { done: false };
   }

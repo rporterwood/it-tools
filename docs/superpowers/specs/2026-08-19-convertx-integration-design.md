@@ -255,7 +255,19 @@ the situation the probe exists to detect.
 Auth policy mirrors upstream exactly (fact 21) rather than inventing a new one:
 `POST /api/v1/targets` open, `GET /api/v1/converters` authenticated.
 
-`GET /api/v1/jobs/:id`'s `status` field is **informational only** — mirrored from `jobs.status` for
+`GET /api/v1/jobs/:id`'s `status` field is **informational only, with exactly one exception**: the
+value `'failed'`, which the API writes from `handleConvert`'s `.catch()`, is authoritative and
+terminal. It is the only signal that the background conversion chain died — `files.length` will
+never reach `numFiles` in that case, so without it a client polls until its stall timeout and
+reports "still working" about a job that is already dead. Because jobs are single-use, such a job
+can be neither recovered nor retried. Every other value remains untrustworthy — see fact (10):
+`'completed'` is written unconditionally in `.then()` even when every file failed.
+
+Note this is a deliberate divergence from upstream, which never writes `'failed'`. Upstream shares
+the fire-and-forget shape but has no single-use guard, so a wedged job there is simply resubmitted;
+our guard is what makes the terminal state necessary.
+
+The rest of the field is mirrored from `jobs.status` for
 debugging. Completion is `files.length === numFiles`; per fact (10) `status` lies about success.
 
 ### Error envelope
@@ -335,7 +347,16 @@ encoding bug in PR #587.
 ### Progress semantics
 
 ```
-done      ⟺ files.length === numFiles          (never trust jobs.status — fact 10)
+done      ⟺ files.length === numFiles          (never trust any OTHER status — fact 10)
+                                                CHECKED FIRST: handleConvert chunks its
+                                                work, so a job can be flagged 'failed'
+                                                while sibling files still land rows;
+                                                completeness must win or real
+                                                downloadable results get hidden.
+jobFailed ⟺ status === 'failed' AND not done   (the ONE authoritative status value,
+                                                written by handleConvert's .catch() and
+                                                by the output-directory failure path;
+                                                terminal, and unreachable otherwise)
 failed    ⟺ status ∈ { "Failed, check logs", "File type not supported" }
 succeeded ⟺ any other status, including "Done" and converter-supplied messages
 expired   ⟺ 404 after a prior success (fact 17) — reported as expiry, not error
