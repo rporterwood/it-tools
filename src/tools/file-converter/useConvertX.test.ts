@@ -188,6 +188,30 @@ describe('useConvertX boot sequence (init)', () => {
     expect(result.converters.value).toEqual({});
     unmount();
   });
+
+  it('discards a getConverters() payload that resolves after reset() invalidates init()', async () => {
+    vi.mocked(checkHealth).mockResolvedValue(true);
+    vi.mocked(createSession).mockResolvedValue(1);
+    const pendingConverters = deferred<Record<string, string[]>>();
+    vi.mocked(getConverters).mockReturnValue(pendingConverters.promise);
+
+    const { result, unmount } = withSetup(() => useConvertX());
+    // Let checkHealth/createSession resolve so init() suspends on the still-pending getConverters().
+    await flushRealMicrotasks();
+    expect(result.state.value).toBe('probing');
+
+    result.reset();
+    expect(result.state.value).toBe('ready');
+
+    // The abandoned init()'s getConverters() finally resolves, well after reset() moved on.
+    pendingConverters.resolve({ ffmpeg: ['jpg'] });
+    await flushRealMicrotasks();
+
+    // Without checking the generation before assigning, this write would land unconditionally.
+    expect(result.converters.value).toEqual({});
+    expect(result.state.value).toBe('ready');
+    unmount();
+  });
 });
 
 describe('useConvertX selectFile', () => {
@@ -533,6 +557,37 @@ describe('useConvertX convert + poll', () => {
     await flushFakeMicrotasks();
     expect(result.isSlow.value).toBe(false);
     expect(result.state.value).toBe('ready');
+    unmount();
+  });
+
+  it('clears a stale isSlow immediately when re-invoked, before the new call could itself be slow', async () => {
+    const firstCreateJob = deferred<number>();
+    vi.mocked(createJob).mockReturnValueOnce(firstCreateJob.promise);
+    vi.mocked(uploadFile).mockResolvedValue(['stored.png']);
+    vi.mocked(startConvert).mockResolvedValue(undefined);
+    vi.mocked(getJob).mockResolvedValue({ status: 'pending', numFiles: 1, files: [] });
+
+    const { result, unmount } = await bootReady();
+
+    void result.convert(makeFile('a.png'), 'jpg', 'ffmpeg');
+    await vi.advanceTimersByTimeAsync(SLOW_REQUEST_THRESHOLD_MS);
+    expect(result.isSlow.value).toBe(true);
+
+    // Re-invoke directly - no reset() in between - with a fast second createJob().
+    vi.mocked(createJob).mockResolvedValueOnce(2);
+    const second = result.convert(makeFile('b.png'), 'jpg', 'ffmpeg');
+
+    // Must already be false on entry to the new operation, before it has had any chance to be
+    // slow itself - not one microtask later once its own withSlowIndicator() settles.
+    expect(result.isSlow.value).toBe(false);
+
+    await second;
+    expect(result.isSlow.value).toBe(false);
+
+    // The first (abandoned) call's orphaned createJob() finally settles too - must not resurrect it.
+    firstCreateJob.resolve(1);
+    await flushFakeMicrotasks();
+    expect(result.isSlow.value).toBe(false);
     unmount();
   });
 });

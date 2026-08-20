@@ -129,9 +129,17 @@ export function useConvertX() {
   // its `await getJob()`, a selectFile() past its `await getTargets()`, a convert() mid-chain,
   // ...), so each one's eventual resolution becomes a no-op instead of clobbering whatever state
   // comes next. Returns the new generation for the caller to capture.
+  //
+  // Also zeroes `isSlow` here, not just in reset(): every operation starts this way, so a stale
+  // `true` left by a prior operation's abandoned request (its own timer callback is gated on the
+  // generation it captured, but the ref itself has no memory of "whose" true it's showing) can
+  // never bleed into the start of the next operation - including re-invoking the same operation
+  // (e.g. calling convert() again without an intervening reset()) and unmount, which previously
+  // left a hung call's timer able to leave `isSlow` true forever on a now-discarded ref.
   function invalidate(): number {
     stopPolling();
     operationGeneration += 1;
+    isSlow.value = false;
     return operationGeneration;
   }
 
@@ -197,10 +205,11 @@ export function useConvertX() {
       return;
     }
 
-    converters.value = await withSlowIndicator(generation, () => getConverters()).catch(() => ({}));
+    const foundConverters = await withSlowIndicator(generation, () => getConverters()).catch(() => ({}));
     if (unmounted || generation !== operationGeneration) {
       return;
     }
+    converters.value = foundConverters;
     state.value = 'ready';
   }
 
@@ -343,12 +352,12 @@ export function useConvertX() {
   }
 
   function reset() {
+    // invalidate() also zeroes isSlow.
     invalidate();
     jobId.value = null;
     results.value = [];
     targets.value = {};
     errorMessage.value = '';
-    isSlow.value = false;
 
     // Preserve terminal backend-availability states rather than trusting a future caller not to
     // invoke reset() from them: jumping straight to 'ready' would present a working file picker

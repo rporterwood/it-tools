@@ -1339,7 +1339,10 @@ Expected: FAIL — cannot resolve `./useConvertX`.
 > **Operation invalidation is mandatory, and the code below does not show it.** Every
 > user-initiated operation — `init`, `selectFile`, `convert`, `reset`, and unmount — must bump a
 > shared generation counter on entry, and **every continuation after an `await` must re-check it**
-> before writing state or scheduling a timer. Guarding only `convert`/`poll`/`reset`/unmount is
+> before writing **any reactive value** or scheduling a timer. Not just `state` — a first pass at
+> this guarded every `state` write correctly and still let `converters.value` be assigned before
+> its check, so abandoned capability data landed anyway. The check goes before the assignment, not
+> after it. Guarding only `convert`/`poll`/`reset`/unmount is
 > not enough: a stale `selectFile` resolving late will stomp an active `'converting'` state back
 > to `'ready'`, and an in-flight poll will overwrite the `'ready'` state a fresh `selectFile` just
 > set — both reproduced against real code, both reachable by the ordinary interaction of picking a
