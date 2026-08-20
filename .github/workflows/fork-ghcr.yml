@@ -10,6 +10,9 @@ on:
     branches:
       - main
       - feat/convertx-integration
+  # Pull requests build but do not push, so a change to the Dockerfiles or to
+  # this workflow is proven before it can publish a broken :latest.
+  pull_request:
   workflow_dispatch:
     inputs:
       rebuild_convertx:
@@ -38,9 +41,9 @@ jobs:
 
       - name: Decide whether ConvertX needs a rebuild
         id: decide
-        # The image carries LibreOffice, TeX Live, ImageMagick and ffmpeg, so a
-        # cold build costs tens of minutes. Skip it when the submodule pointer
-        # is untouched -- the existing :latest in GHCR is still correct.
+        # The image carries LibreOffice, TeX Live, ImageMagick and ffmpeg; a
+        # cold build measured 6m23s on a GitHub runner. Skip it when the
+        # submodule pointer is untouched -- the published :latest still matches.
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.rebuild_convertx }}" = "true" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
@@ -82,11 +85,12 @@ jobs:
           context: ./services/convertx
           file: ./services/convertx/Dockerfile
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           # Registry cache rather than the GitHub Actions cache: the apt layer
-          # alone would blow through the 10GB per-repo GHA cache budget.
+          # alone would blow through the 10GB per-repo GHA cache budget. Pull
+          # requests read that cache but never write to it.
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/convertx:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/convertx:buildcache,mode=max
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=ghcr.io/{0}/convertx:buildcache,mode=max', github.repository_owner) || '' }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/convertx:latest
             ghcr.io/${{ github.repository_owner }}/convertx:${{ steps.pin.outputs.sha }}
@@ -118,13 +122,13 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           # Matches compose.yaml: the SPA talks to /api/v1, which nginx proxies
           # to the convertx container.
           build-args: |
             VITE_CONVERTX_URL=/api/v1
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/it-tools:latest
             ghcr.io/${{ github.repository_owner }}/it-tools:${{ github.sha }}
