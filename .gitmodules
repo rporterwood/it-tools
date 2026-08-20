@@ -1,0 +1,3 @@
+[submodule "services/convertx"]
+	path = services/convertx
+	url = https://github.com/C4illin/ConvertX.git
