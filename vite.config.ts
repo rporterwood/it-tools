@@ -56,6 +56,9 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       strategies: 'generateSW',
+      workbox: {
+        navigateFallbackDenylist: [/^\/api\//],
+      },
       manifest: {
         name: 'IT Tools',
         description: 'Aggregated set of useful tools for developers.',
