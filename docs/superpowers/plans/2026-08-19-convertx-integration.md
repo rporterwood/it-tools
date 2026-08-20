@@ -1145,7 +1145,18 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
     throw new Error(body?.message ?? `Request failed with status ${response.status}`);
   }
 
-  return await response.json() as T;
+  // Guard the SUCCESS path too, not just the error path. A 200 carrying non-JSON is
+  // a known failure mode here: if nginx is misconfigured and serves the SPA shell
+  // instead of proxying, every one of these calls gets HTML with status 200. Letting
+  // response.json() throw sends a raw `SyntaxError: Unexpected token < in JSON` to the
+  // component. checkHealth() already guards exactly this — the shared helper must too.
+  const parsed = await response.json().catch(() => null) as T | null;
+
+  if (parsed === null) {
+    throw new Error('The converter backend returned an unreadable response.');
+  }
+
+  return parsed;
 }
 
 export async function createSession(): Promise<number> {
@@ -1362,14 +1373,20 @@ export interface ConvertResult {
 }
 
 export function classifyJob(job: JobStatus): { done: boolean, failed?: boolean, results?: ConvertResult[] } {
-  // Completeness is checked BEFORE the job-level failure flag, deliberately.
-  // handleConvert chunks its work, so a job can be marked 'failed' by one chunk's
-  // DB write throwing while sibling files still land their rows — checking 'failed'
-  // first would hide real, downloadable results from the user.
-  if (job.numFiles > 0 && job.files.length === job.numFiles) {
-    // fall through to the per-file classification below
-  }
-  else if (job.status === 'failed') {
+  // Completeness is computed ONCE and branched on. Do not express this as a
+  // fall-through plus a later `files.length !== numFiles` check: a fresh job is
+  // (numFiles 0, files []), where `0 !== 0` is false, so it would slip past both
+  // guards and report done:true with zero results — the tool would flash a
+  // completed conversion the instant it created the job.
+  //
+  // `numFiles > 0` is what excludes that fresh-job case, and completeness is
+  // evaluated BEFORE the job-level failure flag deliberately: handleConvert chunks
+  // its work, so a job can be marked 'failed' by one chunk's DB write throwing
+  // while sibling files still land their rows — checking 'failed' first would hide
+  // real, downloadable results from the user.
+  const complete = job.numFiles > 0 && job.files.length === job.numFiles;
+
+  if (!complete) {
     // The ONE case where job.status is authoritative. The API writes 'failed' from
     // handleConvert's .catch(), and from the output-directory failure path — the
     // only signals that the background chain died before producing rows. Without
@@ -1377,10 +1394,10 @@ export function classifyJob(job: JobStatus): { done: boolean, failed?: boolean, 
     // about a job that is already dead and, being single-use, unretryable.
     // Every OTHER status value stays untrustworthy: 'completed' is written
     // unconditionally in .then() even when every single file failed.
-    return { done: true, failed: true, results: [] };
-  }
+    if (job.status === 'failed') {
+      return { done: true, failed: true, results: [] };
+    }
 
-  if (job.files.length !== job.numFiles) {
     return { done: false };
   }
 
