@@ -19,32 +19,25 @@ of running it — see the [File converter section of the README](README.md#file-
 AGPL §13 requires you to offer those users the complete corresponding source,
 including any modifications, at no charge.
 
-**That obligation is not currently satisfied, and this stack is not currently
-exposed to any users over a network.** Status as of this writing:
+**Both halves of the source are published, so that offer can be satisfied by
+pointing at them:**
 
-- The source for this fork (it-tools side) is available at the repository you cloned
-  it from.
-- The source for the ConvertX fork is **not currently published anywhere**. It
-  exists only as a local branch (`json-api`) in this checkout's `services/convertx`
-  submodule — it was never pushed to `.gitmodules`' recorded URL (upstream
-  `C4illin/ConvertX`) or to any other remote. See the README's
-  ["Publishing the ConvertX fork"](README.md#publishing-the-convertx-fork) section
-  for exactly what publishing it involves. Until that is done, source is available
-  on request from the maintainer. The upstream ConvertX license terms this fork's
-  modifications are made under are unaffected by this and still apply — see
-  [`services/convertx/LICENSE`](services/convertx/LICENSE).
+- **it-tools side** — <https://github.com/rporterwood/it-tools>, this fork.
+- **ConvertX side** — <https://github.com/rporterwood/ConvertX>, on the `json-api`
+  branch. The exact commit vendored here as the `services/convertx` submodule is
+  `b97aaa2d0204fdd87689d5415cf1d87ce56d08c1`, tagged `json-api-2026-08-20`; the tag
+  is what the pin resolves to, so it stays fetchable even though `json-api` itself
+  is rebased. The upstream ConvertX license terms this fork's modifications are made
+  under still apply — see [`services/convertx/LICENSE`](services/convertx/LICENSE).
 
-**If this stack is ever made available to users over a network — including a
-homelab instance reachable by anyone other than you — the ConvertX fork's source
-must be published first**, following the README steps referenced above, before
-AGPL §13's written-offer obligation can be satisfied. Running it only for yourself,
-on a machine only you can reach, does not trigger §13; making it reachable by
-anyone else does.
+Running it only for yourself, on a machine only you can reach, does not trigger §13;
+making it reachable by anyone else does.
 
-If you redistribute this stack yourself — including running a modified copy that
-other people can reach over a network — you take on that same AGPL §13 obligation
-for your own users and your own modifications, and the same "not currently
-published" gap applies to you until you close it.
+Publishing the source above satisfies the *availability* side of §13 for the code as
+vendored here. It does not discharge §13 for anyone else: if you redistribute this
+stack, or run a **modified** copy that other people can reach over a network, you
+owe your own users the complete corresponding source of *your* version, including
+your modifications — and these URLs do not contain them.
 
 ## Not legal advice
 
