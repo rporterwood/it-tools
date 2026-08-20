@@ -27,6 +27,12 @@ export const config = figue({
       default: 'development',
       env: 'VITE_VERCEL_ENV',
     },
+    convertxUrl: {
+      doc: 'Base URL of the ConvertX JSON API',
+      format: 'string',
+      default: '/api/v1',
+      env: 'VITE_CONVERTX_URL',
+    },
   },
   plausible: {
     isTrackerEnabled: {

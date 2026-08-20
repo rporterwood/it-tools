@@ -36,6 +36,99 @@ docker run -d --name it-tools --restart unless-stopped -p 8080:80 ghcr.io/corent
 - [Tipi](https://www.runtipi.io/docs/apps-available)
 - [Unraid](https://unraid.net/community/apps?q=it-tools)
 
+## File converter (self-hosted)
+
+This fork adds a **File converter** tool backed by a companion
+[ConvertX](https://github.com/C4illin/ConvertX) service, which converts between
+1000+ formats using ffmpeg, LibreOffice, ImageMagick, pandoc and others. It ships as
+a second container in the `compose.yaml` at the repo root and is not part of the
+plain Docker Hub / GHCR images above.
+
+### Running it
+
+The `services/convertx` submodule resolves from a public remote, so a recursive
+clone gives you a buildable tree:
+
+```sh
+git clone --recurse-submodules https://github.com/rporterwood/it-tools
+cd it-tools
+cp .env.example .env && sed -i "s/replace-me/$(openssl rand -hex 32)/" .env
+docker compose up -d
+```
+
+The `.env` step is required, not optional: `compose.yaml` declares
+`JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}`, so `docker compose` refuses to
+start until it is set. `.env.example` is committed with a `replace-me` placeholder
+and `.env` itself is gitignored, so your generated secret stays out of git.
+
+If you already cloned without `--recurse-submodules`, or `services/convertx` is
+otherwise empty, `git submodule update --init` populates it.
+
+Then open <http://localhost:8080>. The first `docker compose build` downloads
+several GB of native converters (LibreOffice, TeX Live, ImageMagick, ffmpeg, and
+more) via `apt-get` and takes tens of minutes; later rebuilds reuse the cached apt
+layer and take minutes.
+
+Without the backend, it-tools still builds and deploys as a normal static site — the
+File converter tool simply reports that its backend is not reachable.
+
+### The ConvertX fork and its pin policy
+
+`services/convertx` tracks <https://github.com/rporterwood/ConvertX>, a fork of
+[C4illin/ConvertX](https://github.com/C4illin/ConvertX) carrying the JSON API this
+tool talks to. Development happens on the `json-api` branch, which is rebased and
+force-pushed freely.
+
+Because of that, the umbrella repo never pins the branch tip. Each verified state
+gets a dated tag (`json-api-YYYY-MM-DD`), and the recorded gitlink is that tag's
+commit, so a later rebase can't leave `services/convertx` pointing at an object
+that no longer exists on the remote. The current pin is
+`b97aaa2d0204fdd87689d5415cf1d87ce56d08c1`, tagged `json-api-2026-08-20`.
+
+To move the pin: push the new work to `json-api`, tag the verified commit, push the
+tag, then check out that commit in `services/convertx` and commit the updated
+gitlink here.
+
+### Read this before exposing it
+
+The stack runs ConvertX in unauthenticated shared mode
+(`ALLOW_UNAUTHENTICATED=true`, `UNAUTHENTICATED_USER_SHARING=true` in
+`compose.yaml`). That pins every job to the same synthetic user, and job ids are
+sequential integers, so the ownership check every route performs
+(`WHERE id = ? AND user_id = ?`) passes for any caller on any job:
+
+> **Anyone who can reach the stack can enumerate every job and download every file
+> anyone has converted.**
+
+There is also **no rate limiting** anywhere in front of ConvertX. Both are
+deliberate trade-offs for a trusted LAN or a single-user homelab, not oversights —
+do not expose this stack to the internet without adding real authentication and
+rate limiting in front of it.
+
+Converted files and their originals are deleted after roughly 24 hours
+(`AUTO_DELETE_EVERY_N_HOURS`, set in `compose.yaml`).
+
+### Manual verification checklist
+
+Nothing in this repo's CI or test suite exercises the native converter binaries —
+ffmpeg, LibreOffice, ImageMagick/vips, pandoc, and the rest exist only inside the
+`services/convertx` Docker image, not on the machine running `pnpm test`. This
+checklist is the **only** coverage those binaries get, so run it by hand after any
+`docker compose build convertx` that touches the converter image:
+
+- [ ] ImageMagick/vips: convert a `.png` to `.webp`
+- [ ] ffmpeg: convert a `.mp4` to `.webm`
+- [ ] LibreOffice: convert a `.docx` to `.pdf`
+- [ ] pandoc: convert a `.md` to `.html`
+- [ ] Failure path: upload a deliberately corrupt file and confirm the UI renders
+      `Failed, check logs` instead of silently offering a broken download
+
+### Licensing
+
+ConvertX is vendored as a submodule under its own AGPL-3.0 license, distinct from
+this project's GPLv3 license. See [`LICENSING.md`](LICENSING.md) for how the two
+combine and what that means if you redistribute this stack.
+
 ## Contribute
 
 ### Recommended IDE Setup
@@ -130,4 +223,6 @@ Contributor graph is generated using [contrib.rocks](https://contrib.rocks/previ
 
 ## License
 
-This project is under the [GNU GPLv3](LICENSE).
+This project is under the [GNU GPLv3](LICENSE). This fork also vendors ConvertX, a
+separately AGPL-3.0-licensed work — see [`LICENSING.md`](LICENSING.md) for how the
+two combine.

@@ -56,6 +56,11 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       strategies: 'generateSW',
+      workbox: {
+        // Without this, vite-plugin-pwa's default navigateFallback ('index.html') answers
+        // same-origin /api/... navigations with the SPA shell instead of proxying them.
+        navigateFallbackDenylist: [/^\/api\//],
+      },
       manifest: {
         name: 'IT Tools',
         description: 'Aggregated set of useful tools for developers.',
@@ -108,7 +113,12 @@ export default defineConfig({
     'import.meta.env.PACKAGE_VERSION': JSON.stringify(process.env.npm_package_version),
   },
   test: {
-    exclude: [...configDefaults.exclude, '**/*.e2e.spec.ts'],
+    // `services/**` holds the ConvertX submodule, whose tests are Bun tests
+    // (`import { … } from "bun:test"`). Vitest scans from the repo root, so
+    // without this it collects all 31 of them and fails every one on an
+    // unresolvable `bun:test` import — every test that runs still passes, but
+    // the suite exits non-zero. Run those with `bun test` inside the submodule.
+    exclude: [...configDefaults.exclude, '**/*.e2e.spec.ts', 'services/**'],
   },
   build: {
     target: 'esnext',

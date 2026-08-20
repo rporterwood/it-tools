@@ -31,6 +31,12 @@ export default defineConfig({
     testIdAttribute: 'data-test-id',
     locale: 'en-GB',
     timezoneId: 'Europe/Paris',
+
+    /* page.route() does not intercept requests mediated by a service worker (this is
+       Playwright's own documented limitation), and it-tools registers one unconditionally
+       (src/main.ts). Without this, API mocks work on first load and go flaky once the SW
+       activates. */
+    serviceWorkers: 'block',
   },
 
   /* Configure projects for major browsers */
