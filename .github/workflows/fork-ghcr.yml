@@ -1,0 +1,130 @@
+name: Fork images (GHCR)
+
+# Builds the two images this fork actually runs -- it-tools and the forked
+# ConvertX in services/convertx -- and pushes them to GHCR so Portainer can
+# pull instead of building. The upstream docker workflows in this directory
+# push to corentinth/* and only cover it-tools; they are left alone.
+
+on:
+  push:
+    branches:
+      - main
+      - feat/convertx-integration
+  workflow_dispatch:
+    inputs:
+      rebuild_convertx:
+        description: Rebuild the ConvertX image even if the submodule pointer did not change
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: fork-ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  convertx:
+    name: ConvertX image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 2
+
+      - name: Decide whether ConvertX needs a rebuild
+        id: decide
+        # The image carries LibreOffice, TeX Live, ImageMagick and ffmpeg, so a
+        # cold build costs tens of minutes. Skip it when the submodule pointer
+        # is untouched -- the existing :latest in GHCR is still correct.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.rebuild_convertx }}" = "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif ! git rev-parse HEAD^ >/dev/null 2>&1; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet HEAD^ HEAD -- services/convertx .github/workflows/fork-ghcr.yml; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read the pinned ConvertX commit
+        if: steps.decide.outputs.build == 'true'
+        id: pin
+        run: echo "sha=$(git -C services/convertx rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reclaim runner disk space
+        if: steps.decide.outputs.build == 'true'
+        # The converter toolchain unpacks to several GB; the stock runner image
+        # ships tens of GB of SDKs this build never touches.
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+
+      - name: Login to GitHub Container Registry
+        if: steps.decide.outputs.build == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        if: steps.decide.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        if: steps.decide.outputs.build == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/convertx
+          file: ./services/convertx/Dockerfile
+          platforms: linux/amd64
+          push: true
+          # Registry cache rather than the GitHub Actions cache: the apt layer
+          # alone would blow through the 10GB per-repo GHA cache budget.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/convertx:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/convertx:buildcache,mode=max
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/convertx:latest
+            ghcr.io/${{ github.repository_owner }}/convertx:${{ steps.pin.outputs.sha }}
+
+      - name: Report skip
+        if: steps.decide.outputs.build != 'true'
+        run: echo "services/convertx unchanged -- reusing the published ghcr.io/${{ github.repository_owner }}/convertx:latest" >> "$GITHUB_STEP_SUMMARY"
+
+  it-tools:
+    name: it-tools image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          # Matches compose.yaml: the SPA talks to /api/v1, which nginx proxies
+          # to the convertx container.
+          build-args: |
+            VITE_CONVERTX_URL=/api/v1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/it-tools:latest
+            ghcr.io/${{ github.repository_owner }}/it-tools:${{ github.sha }}

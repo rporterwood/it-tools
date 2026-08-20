@@ -1,0 +1,36 @@
+# Deploy-only stack: pulls the images built by .github/workflows/fork-ghcr.yml
+# instead of building from source. Paste this into a Portainer web-editor stack
+# (or run `docker compose -f compose.ghcr.yaml up -d`) on any amd64 host.
+#
+# Use compose.yaml instead when you want to build locally from the working tree.
+
+services:
+  it-tools:
+    image: ghcr.io/rporterwood/it-tools:latest
+    ports:
+      - "8080:80"
+    depends_on:
+      - convertx
+    restart: unless-stopped
+
+  convertx:
+    image: ghcr.io/rporterwood/convertx:latest
+    # Intentionally no ports published: convertx is reachable only through the
+    # it-tools nginx proxy (location /api/v1/ in nginx.conf), which keeps
+    # ConvertX's own HTML UI unreachable from a browser. nginx resolves this
+    # hostname at startup, so the two must come up together -- depends_on
+    # handles that.
+    environment:
+      - ALLOW_UNAUTHENTICATED=true
+      - UNAUTHENTICATED_USER_SHARING=true
+      - HTTP_ALLOWED=true
+      - JWT_SECRET=${JWT_SECRET}
+      - AUTO_DELETE_EVERY_N_HOURS=24
+    volumes:
+      # A named volume rather than compose.yaml's ./data bind: a relative bind
+      # in a Portainer stack resolves inside Portainer's own stack directory.
+      - convertx-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  convertx-data:

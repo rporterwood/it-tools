@@ -72,6 +72,29 @@ layer and take minutes.
 Without the backend, it-tools still builds and deploys as a normal static site — the
 File converter tool simply reports that its backend is not reachable.
 
+### Deploying prebuilt images (Portainer, or any pull-only host)
+
+`.github/workflows/fork-ghcr.yml` builds both containers in CI — with a recursive
+checkout, so the submodule is populated — and pushes `linux/amd64` images to:
+
+- `ghcr.io/rporterwood/it-tools:latest`
+- `ghcr.io/rporterwood/convertx:latest`
+
+`compose.ghcr.yaml` is the deploy-only counterpart to `compose.yaml`: same two
+services and the same private-`convertx` topology, but pulling those tags instead
+of building, and using a named volume for `/app/data`. Paste it into a Portainer
+web-editor stack and set `JWT_SECRET` in the stack's environment-variables section
+(`openssl rand -hex 32`).
+
+Do **not** deploy this repo as a Portainer *Repository* stack — Portainer's git
+clone does not initialise submodules, so `services/convertx` arrives empty and the
+build fails. Pull the images instead.
+
+The ConvertX image only rebuilds when the `services/convertx` pointer moves; a
+manual run with `rebuild_convertx: true` forces it. Because the image is tagged
+with the pinned ConvertX commit as well as `latest`, a stack can pin an exact
+converter build when `latest` moving underneath it would be disruptive.
+
 ### The ConvertX fork and its pin policy
 
 `services/convertx` tracks <https://github.com/rporterwood/ConvertX>, a fork of
