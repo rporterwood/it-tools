@@ -44,13 +44,31 @@ This fork adds a **File converter** tool backed by a companion
 a second container in the `compose.yaml` at the repo root and is not part of the
 plain Docker Hub / GHCR images above.
 
+> **This currently only builds in this exact checkout.** The `services/convertx`
+> submodule is pinned to a commit on `json-api`, a branch of the ConvertX fork that
+> has never been pushed anywhere — `.gitmodules` still points at the upstream
+> `C4illin/ConvertX` repository, which does not and will never contain that commit.
+> The commit's objects live only in *this* working copy's `.git/modules/services/convertx`.
+> A plain `git clone --recurse-submodules` of this repo — from this machine or any
+> other — cannot fetch it: it will fail with something like `Fetched in submodule
+> path 'services/convertx', but it did not contain <sha>…`, leaving
+> `services/convertx` empty and `compose.yaml`'s `build: ./services/convertx` with
+> nothing to build. See "Publishing the ConvertX fork" below for how to make this
+> distributable.
+
 ### Running it
 
+From this checkout, where `services/convertx` is already populated with `json-api`:
+
 ```sh
-git clone --recurse-submodules <this repo>
 cp .env.example .env && sed -i "s/replace-me/$(openssl rand -hex 32)/" .env
 docker compose up -d
 ```
+
+If `services/convertx` is ever emptied in this same checkout (e.g. after `git
+submodule deinit`), `git submodule update --init` restores it without touching the
+network — the commit is already present locally at `.git/modules/services/convertx`.
+That recovery path does **not** work from a different clone; see the note above.
 
 Then open <http://localhost:8080>. The first `docker compose build` downloads
 several GB of native converters (LibreOffice, TeX Live, ImageMagick, ffmpeg, and
@@ -59,6 +77,38 @@ layer and take minutes.
 
 Without the backend, it-tools still builds and deploys as a normal static site — the
 File converter tool simply reports that its backend is not reachable.
+
+### Publishing the ConvertX fork
+
+The local-only setup above is a deliberate, temporary state, not a bug. To make the
+`services/convertx` submodule resolvable from a fresh clone elsewhere:
+
+1. **Push `json-api` to a fork you control** — e.g. push it to your own
+   `ConvertX` fork on GitHub rather than upstream `C4illin/ConvertX`, which you
+   don't have write access to:
+   ```sh
+   cd services/convertx
+   git remote add fork <your-fork-url>   # or: git push <your-fork-url> json-api
+   git push fork json-api
+   ```
+2. **Tag the verified state**, per the spec's pin policy (`json-api` is force-pushed
+   freely on rebase, so the umbrella repo must pin an immutable tag, not the branch
+   tip):
+   ```sh
+   git tag json-api-YYYY-MM-DD
+   git push fork json-api-YYYY-MM-DD
+   ```
+3. **Repoint `.gitmodules`** in the it-tools root to `fork`'s URL instead of
+   `https://github.com/C4illin/ConvertX.git`, then `git submodule sync`.
+4. **Re-record the gitlink** — commit the updated `.gitmodules` together with the
+   `services/convertx` submodule pointer now sitting at the tagged commit.
+5. **Verify with a throwaway clone**: `git clone --recurse-submodules <this repo's
+   remote URL> /tmp/verify-clone` and confirm `services/convertx` is populated, not
+   empty, before relying on it anywhere else.
+
+This is also the prerequisite for opening the upstream ConvertX PR the JSON API was
+designed for (see the design spec, D7) — that PR needs a public branch to point at,
+not a local-only one.
 
 ### Read this before exposing it
 
