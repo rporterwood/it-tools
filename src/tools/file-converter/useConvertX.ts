@@ -14,9 +14,9 @@ import {
 export const POLL_INTERVAL_MS = 1000;
 export const STALL_TIMEOUT_MS = 600_000;
 
-// Not part of the required exports, but used to gate the "still trying..." indication
-// described below. Kept small and separate from POLL/STALL so it can move independently.
-const SLOW_REQUEST_THRESHOLD_MS = 3_000;
+// Threshold for the "still trying..." indication (see `withSlowIndicator` below). Exported
+// (rather than kept private) so tests can assert against it instead of hard-coding the number.
+export const SLOW_REQUEST_THRESHOLD_MS = 3_000;
 
 export type ConvertState =
   | 'probing'
@@ -39,6 +39,10 @@ interface JobClassification {
   done: boolean
   failed?: boolean
   results?: ConvertResult[]
+}
+
+function errorMessageOf(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unexpected error';
 }
 
 // Classifies a job's poll response into "still working" / "dead" / "finished with per-file
@@ -94,17 +98,24 @@ export function useConvertX() {
   // cancel real work.
   const isSlow = ref(false);
 
-  // Bumped by reset()/unmount()/every new convert() call. Any in-flight poll (i.e. one already
-  // past its `await getJob(...)`) captured the generation it was scheduled under; if that number
-  // no longer matches by the time the await resolves, the poll's result is stale and must be
-  // discarded rather than allowed to overwrite fresher state (e.g. a reset() or a brand new
-  // convert() that happened while the network call was in flight).
-  let pollGeneration = 0;
+  // Bumped on entry to EVERY user-initiated operation - init(), selectFile(), convert(), reset(),
+  // and unmount - not just polling. Each operation captures the generation it started with; every
+  // await inside it re-checks that capture against the live counter before writing state or
+  // scheduling anything further. This makes the invariant symmetric: any newer operation
+  // invalidates every older one, in both directions.
+  //
+  // This used to be scoped to polling only ("pollGeneration"), which left selectFile() and init()
+  // outside the scheme entirely. That allowed real, user-triggerable corruption in both
+  // directions: a poll suspended in getJob() could resolve after a later selectFile() and
+  // overwrite it back to 'done' with stale results; symmetrically, a selectFile() suspended in
+  // getTargets() could resolve after a later convert() and overwrite 'converting' back to
+  // 'ready'. Scoping the counter to every operation (not just polling) closes both directions.
+  let operationGeneration = 0;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let waitingSince = 0;
   // Set once, on unmount, and never cleared - the composable instance is done for good at that
-  // point, unlike pollGeneration which is expected to change repeatedly across the instance's
-  // life.
+  // point, unlike operationGeneration which is expected to change repeatedly across the
+  // instance's life.
   let unmounted = false;
 
   function stopPolling() {
@@ -114,11 +125,14 @@ export function useConvertX() {
     }
   }
 
-  // Stops any pending timer AND invalidates any poll already in flight (awaiting getJob()), so
-  // its eventual resolution becomes a no-op instead of clobbering whatever state comes next.
-  function invalidatePolling() {
+  // Stops any pending poll timer AND invalidates every in-flight operation (a poll already past
+  // its `await getJob()`, a selectFile() past its `await getTargets()`, a convert() mid-chain,
+  // ...), so each one's eventual resolution becomes a no-op instead of clobbering whatever state
+  // comes next. Returns the new generation for the caller to capture.
+  function invalidate(): number {
     stopPolling();
-    pollGeneration += 1;
+    operationGeneration += 1;
+    return operationGeneration;
   }
 
   // Wraps a request so a component can show a "still trying..." message for a slow-but-legitimate
@@ -127,9 +141,19 @@ export function useConvertX() {
   // (original call, session re-bootstrap, retried call) deliberately un-bounded here, since a
   // cross-cutting deadline would be blunt enough to abort genuinely slow-but-healthy work. This
   // only ever flips a flag after a threshold; it never aborts or races the underlying promise.
-  async function withSlowIndicator<T>(fn: () => Promise<T>): Promise<T> {
+  //
+  // Both the timer callback and the `finally` are gated on the same generation check the caller
+  // uses everywhere else. Without that gate, a request abandoned by reset()/a newer operation
+  // (e.g. a createJob() that never resolves, discarded by reset()) would still flip `isSlow` back
+  // to true off its orphaned timer once the threshold passed - a "still trying..." message with
+  // nothing actually in flight, self-correcting only whenever the orphan eventually settles.
+  async function withSlowIndicator<T>(generation: number, fn: () => Promise<T>): Promise<T> {
+    const isCurrent = () => !unmounted && generation === operationGeneration;
+
     const timer = setTimeout(() => {
-      isSlow.value = true;
+      if (isCurrent()) {
+        isSlow.value = true;
+      }
     }, SLOW_REQUEST_THRESHOLD_MS);
 
     try {
@@ -137,16 +161,20 @@ export function useConvertX() {
     }
     finally {
       clearTimeout(timer);
-      isSlow.value = false;
+      if (isCurrent()) {
+        isSlow.value = false;
+      }
     }
   }
 
   async function init() {
+    const generation = invalidate();
+
     state.value = 'probing';
     errorMessage.value = '';
 
-    const healthy = await withSlowIndicator(() => checkHealth());
-    if (unmounted) {
+    const healthy = await withSlowIndicator(generation, () => checkHealth());
+    if (unmounted || generation !== operationGeneration) {
       return;
     }
     if (!healthy) {
@@ -155,28 +183,30 @@ export function useConvertX() {
     }
 
     try {
-      await withSlowIndicator(() => createSession());
+      await withSlowIndicator(generation, () => createSession());
     }
     catch (error) {
-      if (unmounted) {
+      if (unmounted || generation !== operationGeneration) {
         return;
       }
-      errorMessage.value = (error as Error).message;
+      errorMessage.value = errorMessageOf(error);
       state.value = 'needs-account';
       return;
     }
-    if (unmounted) {
+    if (unmounted || generation !== operationGeneration) {
       return;
     }
 
-    converters.value = await withSlowIndicator(() => getConverters()).catch(() => ({}));
-    if (unmounted) {
+    converters.value = await withSlowIndicator(generation, () => getConverters()).catch(() => ({}));
+    if (unmounted || generation !== operationGeneration) {
       return;
     }
     state.value = 'ready';
   }
 
   async function selectFile(file: File) {
+    const generation = invalidate();
+
     state.value = 'loading-targets';
     errorMessage.value = '';
     results.value = [];
@@ -185,18 +215,18 @@ export function useConvertX() {
     const extension = file.name.includes('.') ? (file.name.split('.').pop() ?? '') : '';
 
     try {
-      const found = await withSlowIndicator(() => getTargets(extension));
-      if (unmounted) {
+      const found = await withSlowIndicator(generation, () => getTargets(extension));
+      if (unmounted || generation !== operationGeneration) {
         return;
       }
       targets.value = found;
       state.value = 'ready';
     }
     catch (error) {
-      if (unmounted) {
+      if (unmounted || generation !== operationGeneration) {
         return;
       }
-      errorMessage.value = (error as Error).message;
+      errorMessage.value = errorMessageOf(error);
       state.value = 'error';
     }
   }
@@ -211,7 +241,7 @@ export function useConvertX() {
   async function runPoll(generation: number) {
     pollTimer = null;
 
-    if (unmounted || generation !== pollGeneration || jobId.value === null) {
+    if (unmounted || generation !== operationGeneration || jobId.value === null) {
       return;
     }
 
@@ -219,9 +249,9 @@ export function useConvertX() {
       const job = await getJob(jobId.value);
 
       // The generation (or unmounted flag) may have changed while getJob() was in flight -
-      // e.g. reset() or a fresh convert() ran during the await. Discard a stale result rather
-      // than let it overwrite newer state.
-      if (unmounted || generation !== pollGeneration) {
+      // e.g. reset(), selectFile(), or a fresh convert() ran during the await. Discard a stale
+      // result rather than let it overwrite newer state.
+      if (unmounted || generation !== operationGeneration) {
         return;
       }
 
@@ -251,10 +281,10 @@ export function useConvertX() {
       schedulePoll(generation);
     }
     catch (error) {
-      if (unmounted || generation !== pollGeneration) {
+      if (unmounted || generation !== operationGeneration) {
         return;
       }
-      errorMessage.value = (error as Error).message;
+      errorMessage.value = errorMessageOf(error);
       state.value = 'error';
     }
   }
@@ -265,17 +295,18 @@ export function useConvertX() {
     }
     // Reset the stall clock to the moment the user agreed to keep waiting, not the original
     // conversion start - otherwise the very next poll would immediately re-trip the stall check.
+    // Deliberately does NOT call invalidate(): this continues the same operation convert()
+    // started, it does not begin a new one.
     waitingSince = Date.now();
     state.value = 'converting';
-    schedulePoll(pollGeneration);
+    schedulePoll(operationGeneration);
   }
 
   async function convert(file: File, target: string, converter: string) {
-    // Jobs are single-use: a fresh createJob() is required for every conversion, and any poll
-    // left over from a previous conversion must be invalidated so it can never resolve into this
-    // one's state.
-    invalidatePolling();
-    const generation = pollGeneration;
+    // Jobs are single-use: a fresh createJob() is required for every conversion, and any prior
+    // operation (a poll, a still-loading selectFile(), a previous convert()) must be invalidated
+    // so it can never resolve into this one's state.
+    const generation = invalidate();
 
     state.value = 'converting';
     errorMessage.value = '';
@@ -283,19 +314,19 @@ export function useConvertX() {
     jobId.value = null;
 
     try {
-      const newJobId = await withSlowIndicator(() => createJob());
-      if (unmounted || generation !== pollGeneration) {
+      const newJobId = await withSlowIndicator(generation, () => createJob());
+      if (unmounted || generation !== operationGeneration) {
         return;
       }
       jobId.value = newJobId;
 
-      const storedNames = await withSlowIndicator(() => uploadFile(newJobId, file));
-      if (unmounted || generation !== pollGeneration) {
+      const storedNames = await withSlowIndicator(generation, () => uploadFile(newJobId, file));
+      if (unmounted || generation !== operationGeneration) {
         return;
       }
 
-      await withSlowIndicator(() => startConvert(newJobId, target, converter, storedNames));
-      if (unmounted || generation !== pollGeneration) {
+      await withSlowIndicator(generation, () => startConvert(newJobId, target, converter, storedNames));
+      if (unmounted || generation !== operationGeneration) {
         return;
       }
 
@@ -303,28 +334,35 @@ export function useConvertX() {
       schedulePoll(generation);
     }
     catch (error) {
-      if (unmounted || generation !== pollGeneration) {
+      if (unmounted || generation !== operationGeneration) {
         return;
       }
-      errorMessage.value = (error as Error).message;
+      errorMessage.value = errorMessageOf(error);
       state.value = 'error';
     }
   }
 
   function reset() {
-    invalidatePolling();
+    invalidate();
     jobId.value = null;
     results.value = [];
     targets.value = {};
     errorMessage.value = '';
     isSlow.value = false;
-    state.value = 'ready';
+
+    // Preserve terminal backend-availability states rather than trusting a future caller not to
+    // invoke reset() from them: jumping straight to 'ready' would present a working file picker
+    // against a backend that is down (`unavailable`) or session-less (`needs-account`), with no
+    // path back to init(). Every other state is safe to fold back to 'ready'.
+    if (state.value !== 'unavailable' && state.value !== 'needs-account') {
+      state.value = 'ready';
+    }
   }
 
   onMounted(init);
   onUnmounted(() => {
     unmounted = true;
-    invalidatePolling();
+    invalidate();
   });
 
   return { state, targets, converters, results, errorMessage, jobId, isSlow, selectFile, convert, reset, keepWaiting };

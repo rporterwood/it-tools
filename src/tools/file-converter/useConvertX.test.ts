@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   checkHealth,
   createJob,
@@ -12,6 +12,7 @@ import {
 } from './convertx.service';
 import {
   POLL_INTERVAL_MS,
+  SLOW_REQUEST_THRESHOLD_MS,
   STALL_TIMEOUT_MS,
   classifyJob,
   useConvertX,
@@ -234,6 +235,10 @@ describe('useConvertX convert + poll', () => {
     vi.mocked(getConverters).mockResolvedValue({});
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   async function bootReady() {
     const harness = withSetup(() => useConvertX());
     await flushFakeMicrotasks();
@@ -410,6 +415,175 @@ describe('useConvertX convert + poll', () => {
     // reset() must win: the stale poll from the discarded job must not overwrite it.
     expect(result.state.value).toBe('ready');
     expect(result.results.value).toEqual([]);
+    unmount();
+  });
+
+  it('abandons a suspended poll when selectFile() picks a different file mid-conversion', async () => {
+    vi.mocked(createJob).mockResolvedValue(1);
+    vi.mocked(uploadFile).mockResolvedValue(['stored.png']);
+    vi.mocked(startConvert).mockResolvedValue(undefined);
+    const pendingJob = deferred<{ status: string; numFiles: number; files: { fileName: string; outputFileName: string; status: string }[] }>();
+    vi.mocked(getJob).mockReturnValue(pendingJob.promise);
+    vi.mocked(getTargets).mockResolvedValue({ ffmpeg: ['webp'] });
+
+    const { result, unmount } = await bootReady();
+
+    await result.convert(makeFile('a.png'), 'jpg', 'ffmpeg');
+    // Fire the first poll tick; it suspends on the still-pending getJob() response.
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    expect(getJob).toHaveBeenCalledTimes(1);
+
+    // The user picks a different file before the poll ever resolves.
+    await result.selectFile(makeFile('b.png'));
+    expect(result.state.value).toBe('ready');
+    expect(result.jobId.value).toBeNull();
+
+    // The abandoned job's poll finally resolves as completed, well after selectFile() moved on.
+    pendingJob.resolve({
+      status: 'completed',
+      numFiles: 1,
+      files: [{ fileName: 'stored.png', outputFileName: 'a.jpg', status: 'Done' }],
+    });
+    await flushFakeMicrotasks();
+
+    // Without the generation re-check after this await, this write would land and clobber
+    // selectFile()'s outcome back to 'done' with stale results.
+    expect(result.state.value).toBe('ready');
+    expect(result.results.value).toEqual([]);
+    expect(result.targets.value).toEqual({ ffmpeg: ['webp'] });
+    unmount();
+  });
+
+  it('abandons a suspended selectFile() when convert() starts before it resolves', async () => {
+    const pendingTargets = deferred<Record<string, string[]>>();
+    vi.mocked(getTargets).mockReturnValue(pendingTargets.promise);
+    vi.mocked(createJob).mockResolvedValue(9);
+    vi.mocked(uploadFile).mockResolvedValue(['stored.png']);
+    vi.mocked(startConvert).mockResolvedValue(undefined);
+    vi.mocked(getJob).mockResolvedValue({ status: 'pending', numFiles: 1, files: [] });
+
+    const { result, unmount } = await bootReady();
+
+    // Started but deliberately not awaited: it suspends on the still-pending getTargets().
+    const selecting = result.selectFile(makeFile('a.png'));
+    expect(result.state.value).toBe('loading-targets');
+
+    // The user starts converting a different file before target-loading ever resolves.
+    await result.convert(makeFile('b.png'), 'jpg', 'ffmpeg');
+    expect(result.state.value).toBe('converting');
+    expect(result.jobId.value).toBe(9);
+
+    // The abandoned selectFile() finally resolves, well after convert() moved on.
+    pendingTargets.resolve({ ffmpeg: ['jpg'] });
+    await flushFakeMicrotasks();
+    await selecting;
+
+    // Without the generation re-check after this await, this write would land and clobber
+    // convert()'s 'converting' state back to 'ready'.
+    expect(result.state.value).toBe('converting');
+    expect(result.jobId.value).toBe(9);
+    unmount();
+  });
+
+  it('flips isSlow on past the threshold during a genuinely slow request, and off once it settles', async () => {
+    const pendingCreateJob = deferred<number>();
+    vi.mocked(createJob).mockReturnValue(pendingCreateJob.promise);
+    vi.mocked(uploadFile).mockResolvedValue(['stored.png']);
+    vi.mocked(startConvert).mockResolvedValue(undefined);
+    vi.mocked(getJob).mockResolvedValue({ status: 'pending', numFiles: 1, files: [] });
+
+    const { result, unmount } = await bootReady();
+
+    const converting = result.convert(makeFile('a.png'), 'jpg', 'ffmpeg');
+    expect(result.isSlow.value).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(SLOW_REQUEST_THRESHOLD_MS);
+    expect(result.isSlow.value).toBe(true);
+
+    pendingCreateJob.resolve(1);
+    await flushFakeMicrotasks();
+    await converting;
+
+    expect(result.isSlow.value).toBe(false);
+    unmount();
+  });
+
+  it('does not flip isSlow back on for a request abandoned by reset() before it settles', async () => {
+    const pendingCreateJob = deferred<number>();
+    vi.mocked(createJob).mockReturnValue(pendingCreateJob.promise);
+
+    const { result, unmount } = await bootReady();
+
+    void result.convert(makeFile('a.png'), 'jpg', 'ffmpeg');
+    expect(result.state.value).toBe('converting');
+
+    // Abandon the request well before the slow-indicator threshold trips.
+    result.reset();
+    expect(result.state.value).toBe('ready');
+    expect(result.isSlow.value).toBe(false);
+
+    // Advance past the threshold: the orphaned timer fires, but must not resurrect `isSlow`
+    // for a request nothing is showing as "in flight" any more.
+    await vi.advanceTimersByTimeAsync(SLOW_REQUEST_THRESHOLD_MS);
+    expect(result.isSlow.value).toBe(false);
+    expect(result.state.value).toBe('ready');
+
+    // Let the orphan actually settle too - still must not disturb anything.
+    pendingCreateJob.resolve(1);
+    await flushFakeMicrotasks();
+    expect(result.isSlow.value).toBe(false);
+    expect(result.state.value).toBe('ready');
+    unmount();
+  });
+});
+
+describe('useConvertX reset() and terminal backend states', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('does not paper over an unreachable backend', async () => {
+    vi.mocked(checkHealth).mockResolvedValue(false);
+
+    const { result, unmount } = withSetup(() => useConvertX());
+    await flushRealMicrotasks();
+    expect(result.state.value).toBe('unavailable');
+
+    result.reset();
+
+    expect(result.state.value).toBe('unavailable');
+    unmount();
+  });
+
+  it('does not paper over a missing session', async () => {
+    vi.mocked(checkHealth).mockResolvedValue(true);
+    vi.mocked(createSession).mockRejectedValue(new Error('Could not start a session'));
+
+    const { result, unmount } = withSetup(() => useConvertX());
+    await flushRealMicrotasks();
+    expect(result.state.value).toBe('needs-account');
+
+    result.reset();
+
+    expect(result.state.value).toBe('needs-account');
+    unmount();
+  });
+
+  it('still returns to ready from an ordinary error state', async () => {
+    vi.mocked(checkHealth).mockResolvedValue(true);
+    vi.mocked(createSession).mockResolvedValue(1);
+    vi.mocked(getConverters).mockResolvedValue({});
+    vi.mocked(getTargets).mockRejectedValue(new Error('boom'));
+
+    const { result, unmount } = withSetup(() => useConvertX());
+    await flushRealMicrotasks();
+
+    await result.selectFile(makeFile('a.png'));
+    expect(result.state.value).toBe('error');
+
+    result.reset();
+
+    expect(result.state.value).toBe('ready');
     unmount();
   });
 });
