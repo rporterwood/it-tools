@@ -111,7 +111,12 @@ export default defineConfig({
     'import.meta.env.PACKAGE_VERSION': JSON.stringify(process.env.npm_package_version),
   },
   test: {
-    exclude: [...configDefaults.exclude, '**/*.e2e.spec.ts'],
+    // `services/**` holds the ConvertX submodule, whose tests are Bun tests
+    // (`import { … } from "bun:test"`). Vitest scans from the repo root, so
+    // without this it collects all 31 of them and fails every one on an
+    // unresolvable `bun:test` import — every test that runs still passes, but
+    // the suite exits non-zero. Run those with `bun test` inside the submodule.
+    exclude: [...configDefaults.exclude, '**/*.e2e.spec.ts', 'services/**'],
   },
   build: {
     target: 'esnext',
