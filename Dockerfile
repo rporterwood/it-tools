@@ -5,7 +5,10 @@ ENV NPM_CONFIG_LOGLEVEL warn
 ENV CI true
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN npm install -g pnpm && pnpm i --frozen-lockfile
+# corepack pins pnpm to package.json's packageManager field; `npm install -g pnpm`
+# grabs latest, which refuses this lockfile ("Cannot verify the identity of the
+# @pnpm/exe.linux-x64 native binary: it is missing from pnpm-lock.yaml").
+RUN corepack enable && pnpm i --frozen-lockfile
 COPY . .
 ARG VITE_CONVERTX_URL=/api/v1
 ENV VITE_CONVERTX_URL=$VITE_CONVERTX_URL
