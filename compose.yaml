@@ -1,0 +1,27 @@
+services:
+  it-tools:
+    build: .
+    ports:
+      - "8080:80"
+    depends_on:
+      - convertx
+    restart: unless-stopped
+
+  convertx:
+    build: ./services/convertx
+    # Intentionally no ports published: convertx is reachable only through
+    # the it-tools nginx proxy (location /api/v1/ in nginx.conf). This keeps
+    # ConvertX's own HTML UI unreachable from a browser. Because proxy_pass
+    # resolves this hostname at nginx startup, starting only the convertx
+    # service (or only it-tools) will leave nginx failing to start with
+    # "host not found in upstream convertx" -- always bring the stack up
+    # together (`docker compose up`), which `depends_on` handles.
+    environment:
+      - ALLOW_UNAUTHENTICATED=true
+      - UNAUTHENTICATED_USER_SHARING=true
+      - HTTP_ALLOWED=true
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
+      - AUTO_DELETE_EVERY_N_HOURS=24
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

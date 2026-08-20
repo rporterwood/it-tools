@@ -7,6 +7,8 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN npm install -g pnpm && pnpm i --frozen-lockfile
 COPY . .
+ARG VITE_CONVERTX_URL=/api/v1
+ENV VITE_CONVERTX_URL=$VITE_CONVERTX_URL
 RUN pnpm build
 
 # production stage
