@@ -7,7 +7,12 @@ on:
 jobs:
   test:
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    # Pinned: Playwright 1.32.3 asks apt for libasound2, libffi7 and
+    # libx264-163, none of which exist on ubuntu-latest (24.04), so
+    # `playwright install --with-deps` exits 100. Bumping Playwright instead
+    # re-resolves @vueuse/shared to 14.x, which drops resolveUnref and breaks
+    # `pnpm build` -- so pin the runner until that upgrade is done properly.
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         shard: [1/3, 2/3, 3/3]
