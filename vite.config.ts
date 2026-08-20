@@ -57,6 +57,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       strategies: 'generateSW',
       workbox: {
+        // Without this, vite-plugin-pwa's default navigateFallback ('index.html') answers
+        // same-origin /api/... navigations with the SPA shell instead of proxying them.
         navigateFallbackDenylist: [/^\/api\//],
       },
       manifest: {
