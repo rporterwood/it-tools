@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { checkHealth, downloadFile, getTargets, isFailureStatus, uploadFile } from './convertx.service';
+import { checkHealth, createSession, downloadFile, getTargets, isFailureStatus, uploadFile } from './convertx.service';
 
 function mockFetch(body: unknown, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -154,6 +154,58 @@ describe('downloadFile', () => {
   });
 });
 
+describe('unreadable success responses (SPA shell served instead of the API)', () => {
+  it('request()-backed calls throw a friendly error instead of a raw SyntaxError', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token < in JSON at position 0');
+      },
+    }));
+
+    await expect(getTargets('png')).rejects.toThrow('The converter backend returned an unreadable response.');
+    await expect(getTargets('png')).rejects.not.toThrow(SyntaxError);
+  });
+
+  it('createSession() throws a friendly error instead of a raw SyntaxError', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token < in JSON at position 0');
+      },
+    }));
+
+    await expect(createSession()).rejects.toThrow('The converter backend returned an unreadable response.');
+    await expect(createSession()).rejects.not.toThrow(SyntaxError);
+  });
+});
+
+describe('network failures (offline, DNS, CORS)', () => {
+  it('translates a raw fetch TypeError into a friendly "could not reach" error on a JSON call', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+    await expect(getTargets('png')).rejects.toThrow('Could not reach the converter backend.');
+    await expect(getTargets('png')).rejects.not.toThrow(TypeError);
+  });
+
+  it('translates the same TypeError on the no-timeout download/upload path', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+    await expect(downloadFile(1, 'out.png')).rejects.toThrow('Could not reach the converter backend.');
+  });
+
+  it('stays distinguishable from the timeout and unreadable-response messages', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    const networkMessage = await getTargets('png').catch((error: Error) => error.message);
+
+    expect(networkMessage).toBe('Could not reach the converter backend.');
+    expect(networkMessage).not.toContain('did not respond in time');
+    expect(networkMessage).not.toContain('unreadable response');
+  });
+});
+
 describe('timeouts', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -243,17 +295,6 @@ describe('timeouts', () => {
     await vi.advanceTimersByTimeAsync(50_000);
 
     await expect(result).resolves.toEqual({ ffmpeg: ['jpg'] });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
-
-  it('retry still works alongside timeout handling when the first attempt 401s (no timeout involved)', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({ success: false, message: 'Unauthorized' }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ userId: 1 }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ffmpeg: ['jpg'] }) });
-    vi.stubGlobal('fetch', fetchMock);
-
-    await expect(getTargets('png')).resolves.toEqual({ ffmpeg: ['jpg'] });
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

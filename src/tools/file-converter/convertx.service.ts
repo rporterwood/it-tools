@@ -35,15 +35,40 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
 
+// The Fetch spec rejects with a `TypeError` for network-level failures - offline, DNS, CORS,
+// connection refused - before any `Response` exists. It's the one heuristic the spec gives us
+// to tell "we couldn't reach the server at all" apart from other failures.
+function isNetworkError(error: unknown): boolean {
+  return error instanceof TypeError;
+}
+
+// Translates the two raw failure shapes `fetch` itself can throw into user-presentable errors.
+// Kept distinct on purpose - "unreachable" (network), "did not respond in time" (abort), and
+// "unreadable response" (bad JSON, checked separately by callers) are three different things a
+// user might act on differently, so they get three different messages.
+function translateFetchError(error: unknown): unknown {
+  if (isAbortError(error)) {
+    return new Error('The converter backend did not respond in time.');
+  }
+  if (isNetworkError(error)) {
+    return new Error('Could not reach the converter backend.');
+  }
+  return error;
+}
+
 // Wraps `fetch` with an optional abort-on-timeout budget. `timeoutMs === null` means "no
-// timeout" (used by uploadFile/downloadFile). A raw abort throws a `DOMException` named
-// `AbortError`, which is not something a component should ever have to special-case, so it is
-// translated here into a plain, user-presentable `Error` - the one place that translation needs
-// to happen. The timer is always cleared, on both the success and failure paths, so a request
-// that finishes before its budget never leaks a pending timer.
+// timeout" (used by uploadFile/downloadFile). Both branches translate raw `fetch` rejections via
+// `translateFetchError` so neither a `DOMException`/`AbortError` nor a raw network `TypeError`
+// ever reaches a caller. The timer is always cleared, on both the success and failure paths, so
+// a request that finishes before its budget never leaks a pending timer.
 async function timedFetch(path: string, init: RequestInit, timeoutMs: number | null): Promise<Response> {
   if (timeoutMs === null) {
-    return await fetch(`${BASE}${path}`, { ...init, credentials: 'same-origin' });
+    try {
+      return await fetch(`${BASE}${path}`, { ...init, credentials: 'same-origin' });
+    }
+    catch (error) {
+      throw translateFetchError(error);
+    }
   }
 
   const controller = new AbortController();
@@ -53,14 +78,26 @@ async function timedFetch(path: string, init: RequestInit, timeoutMs: number | n
     return await fetch(`${BASE}${path}`, { ...init, credentials: 'same-origin', signal: controller.signal });
   }
   catch (error) {
-    if (isAbortError(error)) {
-      throw new Error('The converter backend did not respond in time.');
-    }
-    throw error;
+    throw translateFetchError(error);
   }
   finally {
     clearTimeout(timer);
   }
+}
+
+// A 200 whose body isn't valid JSON means nginx served the SPA shell (or some other non-API
+// response) instead of proxying to the API - the same failure mode checkHealth() already guards
+// against on its own response. Do not remove this as "redundant" with that guard: they parse
+// different responses, and without this one, a misconfigured proxy throws a raw `SyntaxError`
+// straight out of the service layer instead of a message a component can show.
+async function parseSuccessBody<T>(response: Response): Promise<T> {
+  const parsed = await response.json().catch(() => null) as T | null;
+
+  if (parsed === null) {
+    throw new Error('The converter backend returned an unreadable response.');
+  }
+
+  return parsed;
 }
 
 export async function createSession(): Promise<number> {
@@ -71,7 +108,7 @@ export async function createSession(): Promise<number> {
     throw new Error(body?.message ?? 'Could not start a session');
   }
 
-  const { userId } = await response.json() as { userId: number };
+  const { userId } = await parseSuccessBody<{ userId: number }>(response);
   return userId;
 }
 
@@ -111,7 +148,7 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs: numbe
     throw new Error(body?.message ?? `Request failed with status ${response.status}`);
   }
 
-  return await response.json() as T;
+  return await parseSuccessBody<T>(response);
 }
 
 export async function checkHealth(): Promise<boolean> {
