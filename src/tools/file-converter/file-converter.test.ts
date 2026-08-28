@@ -161,6 +161,29 @@ describe('file-converter states', () => {
     expect(wrapper.text()).not.toContain('No converter handles this file type');
   });
 
+  it('ready + populated targets: the picker filters its options as you type', async () => {
+    const { wrapper } = await mountInState({
+      state: 'ready',
+      targets: { ffmpeg: ['mp4', 'webm'], imagemagick: ['png'] },
+    });
+
+    await pickFile(wrapper, new File(['x'], 'video.mkv'));
+    await wrapper.find('[data-test-id="converter-targets"] .c-select-input').trigger('click');
+
+    // c-select only renders its search box while open, so this doubles as proof the
+    // `searchable` prop reached the component at all.
+    const search = wrapper.find('[data-test-id="converter-targets"] .search-input');
+    expect(search.exists()).toBe(true);
+    expect(wrapper.findAll('.c-select-dropdown-option')).toHaveLength(3);
+
+    await search.setValue('webm');
+    await wrapper.vm.$nextTick();
+
+    const labels = wrapper.findAll('.c-select-dropdown-option').map(option => option.text());
+    expect(labels).toContain('webm (ffmpeg)');
+    expect(labels).not.toContain('png (imagemagick)');
+  });
+
   it('error after a failed target lookup: shows the real error, not the misleading "unsupported format" warning', async () => {
     // Regression guard for the defect fixed in this task: an 'error' state also leaves
     // targetOptions empty (targets was never populated), but that must not be presented as

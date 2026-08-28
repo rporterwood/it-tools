@@ -138,6 +138,7 @@ function startOver() {
               :options="targetOptions"
               label="Convert to"
               placeholder="Choose an output format"
+              searchable
               data-test-id="converter-targets"
               my-2
             />
