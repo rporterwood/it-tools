@@ -1,5 +1,12 @@
 # ConvertX Integration Implementation Plan
 
+> **Status: shipped.** Implemented and merged in [rporterwood/it-tools#1](https://github.com/rporterwood/it-tools/pull/1). The step checkboxes
+> below were never ticked during execution and are left as written — this file is a record of
+> the plan as it was handed to the workers, not a live task list. Its inline code blocks are
+> point-in-time sketches: `src/tools/file-converter/` has moved on since (slow-request hints,
+> the extensionless-file alert, a searchable target picker). Read the source for current
+> behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a native it-tools "File Converter" tool that converts files through a forked ConvertX backend running alongside it in a Docker Compose stack.

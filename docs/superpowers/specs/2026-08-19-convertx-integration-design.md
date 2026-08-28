@@ -1,7 +1,7 @@
 # ConvertX Integration — Design
 
 **Date:** 2026-08-19
-**Status:** Approved design, pending implementation plan
+**Status:** Implemented and merged in [rporterwood/it-tools#1](https://github.com/rporterwood/it-tools/pull/1) — the MVP design record as written, not updated for changes made after it shipped; the code is the source of truth where the two disagree
 **Revision:** 2 (incorporates two adversarial review passes)
 **Scope:** Add server-backed file conversion to a personal fork of it-tools, using a forked ConvertX as the backend.
 
