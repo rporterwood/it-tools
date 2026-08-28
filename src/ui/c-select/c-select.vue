@@ -107,10 +107,10 @@ function handleKeydown(event: KeyboardEvent) {
   const isArrowDown = key === 'ArrowDown';
 
   if (isEnter) {
-    const valueCanBeSelected = isOpen.value && focusIndex.value !== -1;
+    const focusedOption = isOpen.value ? filteredOptions.value[focusIndex.value] : undefined;
 
-    if (valueCanBeSelected) {
-      selectOption({ option: filteredOptions.value[focusIndex.value] });
+    if (focusedOption) {
+      selectOption({ option: focusedOption });
     }
     else {
       toggleOpen();
@@ -125,7 +125,10 @@ function handleKeydown(event: KeyboardEvent) {
     focusIndex.value = clamp({
       value: focusIndex.value + increment,
       min: 0,
-      max: options.value.length - 1,
+      // Filtered, not raw: with a search query active the rendered list is shorter than
+      // `options`, and clamping against the raw count let focus point past the last visible
+      // option (making Enter select an option that was no longer there).
+      max: filteredOptions.value.length - 1,
     });
 
     event.preventDefault();
