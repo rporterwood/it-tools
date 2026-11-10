@@ -14,8 +14,10 @@ const sizePercent = useVModel(props, 'sizePercent', emit);
 const fileInput = ref<HTMLInputElement | null>(null);
 const fileName = ref('');
 const error = ref<string>();
+let requestId = 0;
 
 async function useFile(file: File) {
+  const currentRequestId = ++requestId;
   const fileError = getLogoFileError(file);
   if (fileError) {
     error.value = fileError;
@@ -23,11 +25,20 @@ async function useFile(file: File) {
   }
 
   try {
-    image.value = await loadLogoImage(file);
+    const loadedImage = await loadLogoImage(file);
+    if (currentRequestId !== requestId) {
+      return;
+    }
+
+    image.value = loadedImage;
     fileName.value = file.name;
     error.value = undefined;
   }
   catch {
+    if (currentRequestId !== requestId) {
+      return;
+    }
+
     error.value = 'This image could not be read.';
   }
 }
@@ -44,6 +55,7 @@ function onFileChosen(event: Event) {
 }
 
 function removeLogo() {
+  requestId++;
   image.value = null;
   fileName.value = '';
   error.value = undefined;
