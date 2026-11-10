@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import type { QRCodeErrorCorrectionLevel } from 'qrcode';
+import { LOGO_SIZE_PERCENT } from './qr-code-logo.service';
+import QrLogoPicker from './qr-logo-picker.vue';
+import QrScanStatus from './qr-scan-status.vue';
 import { useQRCode } from './useQRCode';
 import { useDownloadFileFromBase64 } from '@/composable/downloadBase64';
 
@@ -9,15 +12,19 @@ const errorCorrectionLevel = ref<QRCodeErrorCorrectionLevel>('medium');
 
 const errorCorrectionLevels = ['low', 'medium', 'quartile', 'high'];
 
+const logoImage = shallowRef<HTMLImageElement | null>(null);
+const logoSizePercent = ref(LOGO_SIZE_PERCENT.default);
+
 const text = ref('https://it-tools.tech');
-const { qrcode } = useQRCode({
+const { qrcode, decodes, renderError } = useQRCode({
   text,
   color: {
     background,
     foreground,
   },
   errorCorrectionLevel,
-  options: { width: 1024 },
+  options: { width: 2048 },
+  logo: { image: logoImage, sizePercent: logoSizePercent },
 });
 
 const { download } = useDownloadFileFromBase64({ source: qrcode, filename: 'qr-code.png' });
@@ -46,7 +53,12 @@ const { download } = useDownloadFileFromBase64({ source: qrcode, filename: 'qr-c
           <n-form-item label="Background color:">
             <n-color-picker v-model:value="background" :modes="['hex']" />
           </n-form-item>
+          <QrLogoPicker v-model:image="logoImage" v-model:size-percent="logoSizePercent" />
+          <n-form-item v-if="logoImage" label="Error resistance:">
+            <span data-test-id="qr-logo-correction-note">high (set automatically while a logo is on)</span>
+          </n-form-item>
           <c-select
+            v-else
             v-model:value="errorCorrectionLevel"
             label="Error resistance:"
             label-position="left"
@@ -59,7 +71,8 @@ const { download } = useDownloadFileFromBase64({ source: qrcode, filename: 'qr-c
       <n-gi>
         <div flex flex-col items-center gap-3>
           <n-image :src="qrcode" width="200" />
-          <c-button @click="download">
+          <QrScanStatus :decodes="decodes" :render-error="renderError" />
+          <c-button :disabled="!qrcode" @click="download">
             Download qr-code
           </c-button>
         </div>

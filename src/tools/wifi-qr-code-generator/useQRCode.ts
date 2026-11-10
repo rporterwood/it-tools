@@ -1,6 +1,7 @@
 import { type MaybeRef, get } from '@vueuse/core';
-import QRCode, { type QRCodeToDataURLOptions } from 'qrcode';
+import type { QRCodeToDataURLOptions } from 'qrcode';
 import { isRef, ref, watch } from 'vue';
+import { type QrLogoOptions, useQrCodeRenderer } from '../qr-code-generator/useQrCodeRenderer';
 
 export const wifiEncryptions = ['WEP', 'WPA', 'nopass', 'WPA2-EAP'] as const;
 export type WifiEncryption = typeof wifiEncryptions[number];
@@ -109,12 +110,13 @@ export function useWifiQRCode({
   eapPhase2Method,
   color: { background, foreground },
   options,
-}: IWifiQRCodeOptions) {
-  const qrcode = ref('');
+  logo,
+}: IWifiQRCodeOptions & { logo?: QrLogoOptions }) {
+  const { qrcode, decodes, renderError, render, clearRenderError } = useQrCodeRenderer();
   const encryption = ref<WifiEncryption>('WPA');
 
   watch(
-    [ssid, password, encryption, eapMethod, isHiddenSSID, eapAnonymous, eapIdentity, eapPhase2Method, background, foreground].filter(isRef),
+    [ssid, password, encryption, eapMethod, isHiddenSSID, eapAnonymous, eapIdentity, eapPhase2Method, background, foreground, logo?.image, logo?.sizePercent].filter(isRef),
     async () => {
       // @see https://github.com/zxing/zxing/wiki/Barcode-Contents#wi-fi-network-config-android-ios-11
       // This is the full spec, there's quite a bit of logic to generate the string embeddedin the QR code.
@@ -129,18 +131,20 @@ export function useWifiQRCode({
         eapPhase2Method: get(eapPhase2Method),
       });
       if (text) {
-        qrcode.value = await QRCode.toDataURL(get(text).trim(), {
-          color: {
-            dark: get(foreground),
-            light: get(background),
-            ...options?.color,
-          },
+        await render({
+          text: get(text).trim(),
+          foreground: get(foreground),
+          background: get(background),
           errorCorrectionLevel: 'M',
-          ...options,
+          options,
+          logo,
         });
+      }
+      else {
+        clearRenderError();
       }
     },
     { immediate: true },
   );
-  return { qrcode, encryption };
+  return { qrcode, encryption, decodes, renderError };
 }
