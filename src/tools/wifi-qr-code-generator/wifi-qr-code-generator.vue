@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { LOGO_SIZE_PERCENT } from '../qr-code-generator/qr-code-logo.service';
+import QrLogoPicker from '../qr-code-generator/qr-logo-picker.vue';
+import QrScanStatus from '../qr-code-generator/qr-scan-status.vue';
 import {
   EAPMethods,
   EAPPhase2Methods,
@@ -17,7 +20,10 @@ const eapAnonymous = ref(false);
 const eapIdentity = ref();
 const eapPhase2Method = ref();
 
-const { qrcode, encryption } = useWifiQRCode({
+const logoImage = shallowRef<HTMLImageElement | null>(null);
+const logoSizePercent = ref(LOGO_SIZE_PERCENT.default);
+
+const { qrcode, encryption, decodes, renderError } = useWifiQRCode({
   ssid,
   password,
   eapMethod,
@@ -29,7 +35,8 @@ const { qrcode, encryption } = useWifiQRCode({
     background,
     foreground,
   },
-  options: { width: 1024 },
+  options: { width: 2048 },
+  logo: { image: logoImage, sizePercent: logoSizePercent },
 });
 
 const { download } = useDownloadFileFromBase64({ source: qrcode, filename: 'qr-code.png' });
@@ -138,11 +145,14 @@ const { download } = useDownloadFileFromBase64({ source: qrcode, filename: 'qr-c
           <n-form-item label="Background color:">
             <n-color-picker v-model:value="background" :modes="['hex']" />
           </n-form-item>
+          <QrLogoPicker v-model:image="logoImage" v-model:size-percent="logoSizePercent" />
         </n-form>
       </div>
+      <QrScanStatus v-if="renderError" :render-error="renderError" />
       <div v-if="qrcode">
         <div flex flex-col items-center gap-3>
           <img alt="wifi-qrcode" :src="qrcode" width="200">
+          <QrScanStatus :decodes="decodes" />
           <c-button @click="download">
             Download qr-code
           </c-button>
