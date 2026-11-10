@@ -1,5 +1,6 @@
 # build stage
-FROM node:lts-alpine AS build-stage
+# Pinned: node:lts moved to a major (25+) that no longer bundles corepack.
+FROM node:24-alpine AS build-stage
 # Set environment variables for non-interactive npm installs
 ENV NPM_CONFIG_LOGLEVEL warn
 ENV CI true
